@@ -62,7 +62,7 @@ MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024
 
 CORS_ORIGINS_RAW = os.getenv(
     "CORS_ORIGINS",
-    "http://localhost:1420,http://127.0.0.1:1420"
+    "http://localhost:1420,http://127.0.0.1:1420,http://tauri.localhost,https://tauri.localhost"
 )
 CORS_ORIGINS = [origin.strip() for origin in CORS_ORIGINS_RAW.split(",") if origin.strip()]
 
