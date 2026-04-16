@@ -19,6 +19,24 @@ import jwt
 import time
 import stripe
 
+CREDIT_PACKS = {
+    "30": {
+        "price": 500,
+        "credits": 30,
+        "label": "Starter",
+    },
+    "100": {
+        "price": 1500,
+        "credits": 100,
+        "label": "Best Seller",
+    },
+    "300": {
+        "price": 4000,
+        "credits": 300,
+        "label": "Premium",
+    },
+}
+
 # =========================================================
 # CONFIG
 # =========================================================
@@ -479,9 +497,6 @@ def credit_paid_checkout_session(session_id: str, expected_email: Optional[str] 
         raise HTTPException(status_code=400, detail="Mode Stripe invalide")
 
     amount_total = int(stripe_obj_get(session, "amount_total", 0))
-    if amount_total != STRIPE_PACK_PRICE_EUR_CENTS:
-        raise HTTPException(status_code=400, detail="Montant Stripe invalide")
-
     payment_status = str(stripe_obj_get(session, "payment_status", "")).strip().lower()
     if payment_status != "paid":
         raise HTTPException(status_code=400, detail="Paiement non confirmé")
@@ -503,8 +518,17 @@ def credit_paid_checkout_session(session_id: str, expected_email: Optional[str] 
     if expected_email and email != expected_email.lower().strip():
         raise HTTPException(status_code=403, detail="Cette session Stripe n'appartient pas à cet utilisateur")
 
-    credits_to_add = STRIPE_PACK_CREDITS
-    pack_name = str(stripe_obj_get(metadata, "pack_name", STRIPE_PACK_NAME)).strip()
+    pack_key = str(stripe_obj_get(metadata, "pack_key", "")).strip()
+    selected_pack = CREDIT_PACKS.get(pack_key)
+    if not selected_pack:
+        raise HTTPException(status_code=400, detail="Pack Stripe invalide")
+
+    expected_amount = int(selected_pack["price"])
+    if amount_total != expected_amount:
+        raise HTTPException(status_code=400, detail="Montant Stripe invalide")
+
+    credits_to_add = int(selected_pack["credits"])
+    pack_name = str(selected_pack["label"]).strip()
 
     if credits_to_add <= 0:
         raise HTTPException(status_code=400, detail="credits_to_add invalide")
@@ -648,7 +672,21 @@ def login(email: str = Form(...), password: str = Form(...)):
     }
 
 @app.post("/create-checkout-session")
-def create_checkout_session(user: sqlite3.Row = Depends(get_current_user)):
+async def create_checkout_session(
+    request: Request,
+    user: sqlite3.Row = Depends(get_current_user),
+):
+    data = await request.json()
+    pack = str(data.get("pack", "")).strip()
+
+    selected_pack = CREDIT_PACKS.get(pack)
+    if not selected_pack:
+        raise HTTPException(status_code=400, detail="Invalid pack")
+
+    price = int(selected_pack["price"])
+    credits = int(selected_pack["credits"])
+    label = str(selected_pack["label"]).strip()
+
     email = str(user["email"]).strip().lower()
 
     success_url = STRIPE_SUCCESS_URL
@@ -665,9 +703,9 @@ def create_checkout_session(user: sqlite3.Row = Depends(get_current_user)):
                 "price_data": {
                     "currency": "eur",
                     "product_data": {
-                        "name": STRIPE_PACK_NAME,
+                        "name": f"{credits} credits pack",
                     },
-                    "unit_amount": STRIPE_PACK_PRICE_EUR_CENTS,
+                    "unit_amount": price,
                 },
                 "quantity": 1,
             }
@@ -676,8 +714,9 @@ def create_checkout_session(user: sqlite3.Row = Depends(get_current_user)):
         cancel_url=STRIPE_CANCEL_URL,
         metadata={
             "user_email": email,
-            "credits_to_add": str(STRIPE_PACK_CREDITS),
-            "pack_name": STRIPE_PACK_NAME,
+            "pack_key": pack,
+            "credits_to_add": str(credits),
+            "pack_name": label,
         },
     )
 
@@ -696,25 +735,33 @@ async def stripe_webhook(request: Request):
             payload, sig_header, STRIPE_WEBHOOK_SECRET
         )
     except Exception as e:
+        print("STRIPE SIGNATURE ERROR:", e)
         raise HTTPException(status_code=400, detail=str(e))
 
-    if event["type"] == "checkout.session.completed":
+    event_type = event["type"]
+    print("STRIPE EVENT RECEIVED:", event_type)
+
+    if event_type == "checkout.session.completed":
         raw_session = event["data"]["object"]
 
         session_id = normalize_checkout_session_id(
             stripe_obj_get(raw_session, "id", "")
         )
 
+        print("CHECKOUT SESSION ID:", session_id)
+
         if not session_id:
             raise HTTPException(status_code=400, detail="session id manquant")
 
         try:
-            credit_paid_checkout_session(session_id)
+            result = credit_paid_checkout_session(session_id)
+            print("CREDIT RESULT:", result)
         except Exception as e:
+            import traceback
             print("WEBHOOK ERROR:", e)
+            traceback.print_exc()
 
     return {"status": "success"}
-
 # =========================================================
 # ROUTES - PRIVATE
 # =========================================================
@@ -794,7 +841,6 @@ async def age_face(
     rate_key = f"age:{user['id']}:{ip}"
     check_rate_limit(rate_key)
 
-    # 🔥 LIMITE JOURNALIÈRE
     MAX_DAILY_REQUESTS = 50
     today = datetime.now(timezone.utc).date().isoformat()
 
@@ -916,6 +962,7 @@ async def age_face(
                 input_path.unlink(missing_ok=True)
         except Exception:
             pass
+
 # =========================================================
 # ADMIN / DEV TEMPORARY ROUTES
 # =========================================================
