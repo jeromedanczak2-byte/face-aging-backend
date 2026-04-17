@@ -1,7 +1,7 @@
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Depends, Request, Body
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from dotenv import load_dotenv
 from pathlib import Path
@@ -618,7 +618,31 @@ def root():
         "success": True,
         "message": "Face Aging API PRO is running"
     }
+@app.get("/payment-success")
+def payment_success():
+    return HTMLResponse("""
+    <html>
+      <head><title>Payment successful</title></head>
+      <body style="font-family:Arial;padding:40px;text-align:center;background:#0b1020;color:white;">
+        <h1>Payment successful</h1>
+        <p>Your credits should appear in the app in a few seconds.</p>
+        <p>You can now return to the app.</p>
+      </body>
+    </html>
+    """)
 
+@app.get("/payment-cancel")
+def payment_cancel():
+    return HTMLResponse("""
+    <html>
+      <head><title>Payment cancelled</title></head>
+      <body style="font-family:Arial;padding:40px;text-align:center;background:#0b1020;color:white;">
+        <h1>Payment cancelled</h1>
+        <p>No credits were added.</p>
+        <p>You can return to the app.</p>
+      </body>
+    </html>
+    """)
 @app.post("/register")
 def register(email: str = Form(...), password: str = Form(...)):
     email = email.lower().strip()
