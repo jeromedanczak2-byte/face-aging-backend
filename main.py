@@ -764,7 +764,7 @@ async def stripe_webhook(request: Request):
 
     event_type = event["type"]
     print("STRIPE EVENT RECEIVED:", event_type)
-
+    print("STRIPE EVENT:", event_type)
     if event_type == "checkout.session.completed":
         raw_session = event["data"]["object"]
 
@@ -780,6 +780,7 @@ async def stripe_webhook(request: Request):
         try:
             result = credit_paid_checkout_session(session_id)
             print("CREDIT RESULT:", result)
+            print("STRIPE CREDIT RESULT:", result)
         except Exception as e:
             import traceback
             print("WEBHOOK ERROR:", e)
