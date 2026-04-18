@@ -619,18 +619,37 @@ def root():
         "message": "Face Aging API PRO is running"
     }
 @app.get("/payment-success")
-def payment_success():
-    return HTMLResponse("""
+def payment_success(session_id: str = ""):
+    message = "Payment successful. You can now return to the app."
+
+    try:
+        clean_session_id = normalize_checkout_session_id(session_id)
+
+        if clean_session_id:
+            result = credit_paid_checkout_session(clean_session_id)
+            print("PAYMENT SUCCESS CREDIT RESULT:", result)
+
+            credits_added = int(result.get("credits_added", 0))
+            credits_total = int(result.get("credits_total", 0))
+
+            if credits_added > 0:
+                message = f"Payment successful. {credits_added} credits added. Total: {credits_total}."
+            else:
+                message = f"Payment confirmed. Total credits: {credits_total}."
+    except Exception as e:
+        print("PAYMENT SUCCESS ERROR:", e)
+        message = "Payment received, but automatic credit sync failed. Please contact support if credits do not appear."
+
+    return HTMLResponse(f"""
     <html>
       <head><title>Payment successful</title></head>
       <body style="font-family:Arial;padding:40px;text-align:center;background:#0b1020;color:white;">
         <h1>Payment successful</h1>
-        <p>Your credits should appear in the app in a few seconds.</p>
+        <p>{message}</p>
         <p>You can now return to the app.</p>
       </body>
     </html>
     """)
-
 @app.get("/payment-cancel")
 def payment_cancel():
     return HTMLResponse("""
