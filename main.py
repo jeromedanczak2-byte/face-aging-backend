@@ -46,7 +46,7 @@ load_dotenv()
 BASE_DIR = Path(__file__).resolve().parent
 OUTPUT_DIR = BASE_DIR / "outputs"
 UPLOAD_DIR = BASE_DIR / "uploads"
-DB_PATH = BASE_DIR / "face_aging.db"
+DB_PATH = Path("/data/face_aging.db")
 
 OUTPUT_DIR.mkdir(exist_ok=True)
 UPLOAD_DIR.mkdir(exist_ok=True)
