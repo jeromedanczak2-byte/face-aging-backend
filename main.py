@@ -768,44 +768,6 @@ async def create_checkout_session(
         "url": session.url,
     }
 
-@app.post("/stripe-webhook")
-async def stripe_webhook(request: Request):
-    payload = await request.body()
-    sig_header = request.headers.get("stripe-signature")
-
-    try:
-        event = stripe.Webhook.construct_event(
-            payload, sig_header, STRIPE_WEBHOOK_SECRET
-        )
-    except Exception as e:
-        print("STRIPE SIGNATURE ERROR:", e)
-        raise HTTPException(status_code=400, detail=str(e))
-
-    event_type = event["type"]
-    print("STRIPE EVENT RECEIVED:", event_type)
-    print("STRIPE EVENT:", event_type)
-    if event_type == "checkout.session.completed":
-        raw_session = event["data"]["object"]
-
-        session_id = normalize_checkout_session_id(
-            stripe_obj_get(raw_session, "id", "")
-        )
-
-        print("CHECKOUT SESSION ID:", session_id)
-
-        if not session_id:
-            raise HTTPException(status_code=400, detail="session id manquant")
-
-        try:
-            result = credit_paid_checkout_session(session_id)
-            print("CREDIT RESULT:", result)
-            print("STRIPE CREDIT RESULT:", result)
-        except Exception as e:
-            import traceback
-            print("WEBHOOK ERROR:", e)
-            traceback.print_exc()
-
-    return {"status": "success"}
 # =========================================================
 # ROUTES - PRIVATE
 # =========================================================
@@ -873,7 +835,48 @@ def confirm_checkout_session(
         "credited_email": result["credited_email"],
         "session_id": session_id,
     }
+@app.post("/stripe-webhook")
+async def stripe_webhook(request: Request):
+    payload = await request.body()
+    sig_header = request.headers.get("stripe-signature")
 
+    try:
+        event = stripe.Webhook.construct_event(
+            payload,
+            sig_header,
+            STRIPE_WEBHOOK_SECRET
+        )
+    except Exception as e:
+        print("STRIPE SIGNATURE ERROR:", e)
+        return {"status": "signature error"}
+
+    event_type = event["type"]
+    print("STRIPE EVENT RECEIVED:", event_type)
+
+    if event_type == "checkout.session.completed":
+        try:
+            raw_session = event["data"]["object"]
+
+            session_id = normalize_checkout_session_id(
+                stripe_obj_get(raw_session, "id", "")
+            )
+
+            print("CHECKOUT SESSION ID:", session_id)
+
+            if not session_id:
+                print("WEBHOOK: session id manquant")
+                return {"status": "ignored"}
+
+            result = credit_paid_checkout_session(session_id)
+            print("STRIPE CREDIT RESULT:", result)
+
+        except Exception as e:
+            import traceback
+            print("WEBHOOK ERROR:", e)
+            traceback.print_exc()
+            return {"status": "error handled"}
+
+    return {"status": "success"}
 @app.post("/age")
 async def age_face(
     request: Request,
