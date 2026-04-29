@@ -405,17 +405,22 @@ def validate_uploaded_image(file: UploadFile, content: bytes):
     ext = Path(file.filename or "input.jpg").suffix.lower()
     content_type = (file.content_type or "").lower()
 
+    # Extensions autorisées
     if ext not in ALLOWED_IMAGE_EXTENSIONS:
         raise HTTPException(
             status_code=400,
             detail="Extension non autorisée. Formats acceptés: jpg, jpeg, png, webp"
         )
 
-    if content_type and content_type not in ALLOWED_IMAGE_MIME_TYPES:
-        raise HTTPException(
-            status_code=400,
-            detail="Type MIME non autorisé"
-        )
+    # Tolérer variantes JPEG
+    if content_type:
+        if "jpeg" in content_type or "jpg" in content_type:
+            pass
+        elif content_type not in ALLOWED_IMAGE_MIME_TYPES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Type MIME non autorisé: {content_type}"
+            )
 
     if not content:
         raise HTTPException(status_code=400, detail="Fichier vide")
@@ -425,188 +430,6 @@ def validate_uploaded_image(file: UploadFile, content: bytes):
             status_code=400,
             detail=f"Fichier trop volumineux. Maximum {MAX_UPLOAD_MB} MB"
         )
-
-def stripe_obj_get(obj: Any, key: str, default=None):
-    if obj is None:
-        return default
-
-    if isinstance(obj, dict):
-        return obj.get(key, default)
-
-    try:
-        value = obj[key]
-        if value is None:
-            return default
-        return value
-    except Exception:
-        pass
-
-    try:
-        value = getattr(obj, key)
-        if value is None:
-            return default
-        return value
-    except Exception:
-        return default
-
-def normalize_checkout_session_id(raw_value: Any) -> str:
-    raw = str(raw_value or "").strip()
-
-    if not raw:
-        return ""
-
-    for separator in ["&", "?", ";", " ", "\n", "\r", "\t"]:
-        if separator in raw:
-            raw = raw.split(separator)[0].strip()
-
-    if "cs_" in raw and not raw.startswith("cs_"):
-        raw = raw[raw.find("cs_"):].strip()
-        for separator in ["&", "?", ";", " ", "\n", "\r", "\t"]:
-            if separator in raw:
-                raw = raw.split(separator)[0].strip()
-
-    return raw
-
-def credit_paid_checkout_session(session_id: str, expected_email: Optional[str] = None) -> dict:
-    session_id = normalize_checkout_session_id(session_id)
-
-    if not session_id:
-        raise HTTPException(status_code=400, detail="session_id manquant")
-
-    if not session_id.startswith("cs_"):
-        raise HTTPException(status_code=400, detail="session_id Stripe invalide")
-
-    existing_tx = get_credit_transaction_by_stripe_payment_id(session_id)
-    if existing_tx:
-        user = get_user_by_id(existing_tx["user_id"])
-        return {
-            "success": True,
-            "message": "Session déjà traitée",
-            "credited_email": user["email"] if user else "",
-            "credits_added": 0,
-            "credits_total": int(user["credits"]) if user else 0,
-        }
-
-    try:
-        session = stripe.checkout.Session.retrieve(session_id)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Impossible de lire la session Stripe: {str(e)}")
-
-    mode = stripe_obj_get(session, "mode", "")
-    if mode != "payment":
-        raise HTTPException(status_code=400, detail="Mode Stripe invalide")
-
-    amount_total = int(stripe_obj_get(session, "amount_total", 0))
-    payment_status = str(stripe_obj_get(session, "payment_status", "")).strip().lower()
-    if payment_status != "paid":
-        raise HTTPException(status_code=400, detail="Paiement non confirmé")
-
-    metadata = stripe_obj_get(session, "metadata", {}) or {}
-    email = str(stripe_obj_get(metadata, "user_email", "")).strip().lower()
-
-    if not email:
-        customer_email = stripe_obj_get(session, "customer_email", "")
-        email = str(customer_email).strip().lower()
-
-    if not email:
-        customer_details = stripe_obj_get(session, "customer_details", {}) or {}
-        email = str(stripe_obj_get(customer_details, "email", "")).strip().lower()
-
-    if not email:
-        raise HTTPException(status_code=400, detail="Email introuvable dans la session Stripe")
-
-    if expected_email and email != expected_email.lower().strip():
-        raise HTTPException(status_code=403, detail="Cette session Stripe n'appartient pas à cet utilisateur")
-
-    pack_key = str(stripe_obj_get(metadata, "pack_key", "")).strip()
-    selected_pack = CREDIT_PACKS.get(pack_key)
-    if not selected_pack:
-        raise HTTPException(status_code=400, detail="Pack Stripe invalide")
-
-    expected_amount = int(selected_pack["price"])
-    if amount_total != expected_amount:
-        raise HTTPException(status_code=400, detail="Montant Stripe invalide")
-
-    credits_to_add = int(selected_pack["credits"])
-    pack_name = str(selected_pack["label"]).strip()
-
-    if credits_to_add <= 0:
-        raise HTTPException(status_code=400, detail="credits_to_add invalide")
-
-    user = get_user_by_email(email)
-    if not user:
-        raise HTTPException(status_code=404, detail=f"Utilisateur introuvable pour {email}")
-
-    conn = get_db()
-    try:
-        cur = conn.cursor()
-
-        cur.execute(
-            "SELECT * FROM credit_transactions WHERE stripe_payment_id = ? LIMIT 1",
-            (session_id,)
-        )
-        existing_tx_in_conn = cur.fetchone()
-        if existing_tx_in_conn:
-            cur.execute("SELECT * FROM users WHERE id = ?", (existing_tx_in_conn["user_id"],))
-            existing_user = cur.fetchone()
-            return {
-                "success": True,
-                "message": "Session déjà traitée",
-                "credited_email": existing_user["email"] if existing_user else "",
-                "credits_added": 0,
-                "credits_total": int(existing_user["credits"]) if existing_user else 0,
-            }
-
-        cur.execute("SELECT credits FROM users WHERE id = ?", (user["id"],))
-        fresh_user = cur.fetchone()
-        if not fresh_user:
-            raise HTTPException(status_code=404, detail="Utilisateur introuvable")
-
-        current_credits = int(fresh_user["credits"])
-        new_credits = current_credits + credits_to_add
-
-        cur.execute(
-            "UPDATE users SET credits = ? WHERE id = ?",
-            (new_credits, user["id"])
-        )
-
-        cur.execute(
-            """
-            INSERT INTO credit_transactions
-            (user_id, transaction_type, amount, balance_after, stripe_payment_id, note, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                user["id"],
-                "purchase",
-                credits_to_add,
-                new_credits,
-                session_id,
-                f"Paiement Stripe - {pack_name}",
-                datetime.now(timezone.utc).isoformat(),
-            )
-        )
-
-        conn.commit()
-    except sqlite3.IntegrityError:
-        conn.rollback()
-        user_after = get_user_by_id(user["id"])
-        return {
-            "success": True,
-            "message": "Session déjà traitée",
-            "credited_email": user_after["email"] if user_after else email,
-            "credits_added": 0,
-            "credits_total": int(user_after["credits"]) if user_after else int(user["credits"]),
-        }
-    finally:
-        conn.close()
-
-    return {
-        "success": True,
-        "credited_email": email,
-        "credits_added": credits_to_add,
-        "credits_total": new_credits,
-    }
 
 # =========================================================
 # ROUTES - PUBLIC
@@ -847,11 +670,11 @@ async def stripe_webhook(request: Request):
             STRIPE_WEBHOOK_SECRET
         )
     except Exception as e:
-        print("STRIPE SIGNATURE ERROR:", e)
+        print("STRIPE SIGNATURE ERROR:")
         return {"status": "signature error"}
 
     event_type = event["type"]
-    print("STRIPE EVENT RECEIVED:", event_type)
+    
 
     if event_type == "checkout.session.completed":
         try:
@@ -861,18 +684,18 @@ async def stripe_webhook(request: Request):
                 stripe_obj_get(raw_session, "id", "")
             )
 
-            print("CHECKOUT SESSION ID:", session_id)
+          
 
             if not session_id:
                 print("WEBHOOK: session id manquant")
                 return {"status": "ignored"}
 
             result = credit_paid_checkout_session(session_id)
-            print("STRIPE CREDIT RESULT:", result)
+            
 
         except Exception as e:
             import traceback
-            print("WEBHOOK ERROR:", e)
+            print("WEBHOOK ERROR:")
             traceback.print_exc()
             return {"status": "error handled"}
 
