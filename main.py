@@ -403,7 +403,6 @@ def client_ip(request: Request) -> str:
 
 def validate_uploaded_image(file: UploadFile, content: bytes):
     ext = Path(file.filename or "input.jpg").suffix.lower()
-    content_type = (file.content_type or "").lower()
 
     # Extensions autorisées
     if ext not in ALLOWED_IMAGE_EXTENSIONS:
@@ -412,16 +411,7 @@ def validate_uploaded_image(file: UploadFile, content: bytes):
             detail="Extension non autorisée. Formats acceptés: jpg, jpeg, png, webp"
         )
 
-    # Tolérer variantes JPEG
-    if content_type:
-        if "jpeg" in content_type or "jpg" in content_type:
-            pass
-        elif content_type not in ALLOWED_IMAGE_MIME_TYPES:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Type MIME non autorisé: {content_type}"
-            )
-
+    
     if not content:
         raise HTTPException(status_code=400, detail="Fichier vide")
 
