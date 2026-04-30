@@ -736,7 +736,11 @@ async def age_face(
         os.environ["FAL_KEY"] = FAL_KEY
 
         content = await file.read()
-        validate_uploaded_image(file, content)
+    try:
+            validate_uploaded_image(file, content)
+    except Exception as e:
+        print("ERROR VALIDATION:", str(e))
+        raise
 
         ext = Path(file.filename or "").suffix.lower()
         if not ext:
