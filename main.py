@@ -402,7 +402,9 @@ def client_ip(request: Request) -> str:
     return "unknown"
 
 def validate_uploaded_image(file: UploadFile, content: bytes):
-    ext = Path(file.filename or "input.jpg").suffix.lower()
+    ext = Path(file.filename or "").suffix.lower()
+    if not ext:
+        ext = ".png"
 
     if ext not in ALLOWED_IMAGE_EXTENSIONS:
         raise HTTPException(
@@ -736,7 +738,9 @@ async def age_face(
         content = await file.read()
         validate_uploaded_image(file, content)
 
-        ext = Path(file.filename or "input.jpg").suffix.lower() or ".jpg"
+        ext = Path(file.filename or "").suffix.lower()
+        if not ext:
+            ext = ".png"
         input_path = UPLOAD_DIR / f"input_{uuid4().hex[:8]}{ext}"
         input_path.write_bytes(content)
 
