@@ -402,16 +402,6 @@ def client_ip(request: Request) -> str:
     return "unknown"
 
 def validate_uploaded_image(file: UploadFile, content: bytes):
-    ext = Path(file.filename or "input.jpg").suffix.lower()
-
-    # Extensions autorisées
-    if ext not in ALLOWED_IMAGE_EXTENSIONS:
-        raise HTTPException(
-            status_code=400,
-            detail="Extension non autorisée. Formats acceptés: jpg, jpeg, png, webp"
-        )
-
-    
     if not content:
         raise HTTPException(status_code=400, detail="Fichier vide")
 
@@ -419,6 +409,16 @@ def validate_uploaded_image(file: UploadFile, content: bytes):
         raise HTTPException(
             status_code=400,
             detail=f"Fichier trop volumineux. Maximum {MAX_UPLOAD_MB} MB"
+        )
+
+    is_jpeg = content.startswith(b"\xff\xd8\xff")
+    is_png = content.startswith(b"\x89PNG\r\n\x1a\n")
+    is_webp = content.startswith(b"RIFF") and b"WEBP" in content[:20]
+
+    if not (is_jpeg or is_png or is_webp):
+        raise HTTPException(
+            status_code=400,
+            detail="Image invalide. Formats acceptés: jpg, jpeg, png, webp"
         )
 
 # =========================================================
