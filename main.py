@@ -402,6 +402,14 @@ def client_ip(request: Request) -> str:
     return "unknown"
 
 def validate_uploaded_image(file: UploadFile, content: bytes):
+    ext = Path(file.filename or "input.jpg").suffix.lower()
+
+    if ext not in ALLOWED_IMAGE_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail="Extension non autorisée. Formats acceptés: jpg, jpeg, png, webp"
+        )
+
     if not content:
         raise HTTPException(status_code=400, detail="Fichier vide")
 
