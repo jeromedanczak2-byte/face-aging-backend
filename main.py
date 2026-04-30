@@ -20,26 +20,10 @@ import time
 import stripe
 
 CREDIT_PACKS = {
-    "30": {
-        "price": 500,
-        "credits": 30,
-        "label": "Starter",
-    },
-    "100": {
-        "price": 1500,
-        "credits": 100,
-        "label": "Best Seller",
-    },
-    "300": {
-        "price": 4000,
-        "credits": 300,
-        "label": "Premium",
-    },
+    "30": {"price": 500, "credits": 30, "label": "Starter"},
+    "100": {"price": 1500, "credits": 100, "label": "Best Seller"},
+    "300": {"price": 4000, "credits": 300, "label": "Premium"},
 }
-
-# =========================================================
-# CONFIG
-# =========================================================
 
 load_dotenv()
 
@@ -52,26 +36,18 @@ OUTPUT_DIR.mkdir(exist_ok=True)
 UPLOAD_DIR.mkdir(exist_ok=True)
 
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "http://127.0.0.1:8000").rstrip("/")
-
 FAL_KEY = os.getenv("FAL_KEY", "").strip()
 JWT_SECRET = os.getenv("JWT_SECRET", "").strip()
 JWT_ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_HOURS = int(os.getenv("ACCESS_TOKEN_EXPIRE_HOURS", "24"))
-
 DEFAULT_FREE_CREDITS = int(os.getenv("DEFAULT_FREE_CREDITS", "0"))
 MAX_AGE = int(os.getenv("MAX_AGE", "100"))
 MODEL_ID = os.getenv("MODEL_ID", "fal-ai/image-apps-v2/age-modify")
 
 STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY", "").strip()
 STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET", "").strip()
-STRIPE_SUCCESS_URL = os.getenv(
-    "STRIPE_SUCCESS_URL",
-    "http://localhost:1420/?session_id={CHECKOUT_SESSION_ID}",
-)
+STRIPE_SUCCESS_URL = os.getenv("STRIPE_SUCCESS_URL", "http://localhost:1420/?session_id={CHECKOUT_SESSION_ID}")
 STRIPE_CANCEL_URL = os.getenv("STRIPE_CANCEL_URL", "http://localhost:1420")
-STRIPE_PACK_NAME = os.getenv("STRIPE_PACK_NAME", "10 credits Face Aging")
-STRIPE_PACK_CREDITS = int(os.getenv("STRIPE_PACK_CREDITS", "10"))
-STRIPE_PACK_PRICE_EUR_CENTS = int(os.getenv("STRIPE_PACK_PRICE_EUR_CENTS", "1000"))
 
 DEV_ADMIN_SECRET = os.getenv("DEV_ADMIN_SECRET", "").strip()
 
@@ -84,28 +60,14 @@ CORS_ORIGINS_RAW = os.getenv(
 )
 CORS_ORIGINS = [origin.strip() for origin in CORS_ORIGINS_RAW.split(",") if origin.strip()]
 
-ALLOWED_IMAGE_MIME_TYPES = {
-    "image/jpeg",
-    "image/jpg",
-    "image/png",
-    "image/webp",
-}
-ALLOWED_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
-
 if not FAL_KEY:
     raise RuntimeError("FAL_KEY manquant dans le fichier .env")
-
 if not JWT_SECRET:
     raise RuntimeError("JWT_SECRET manquant dans le fichier .env")
-
 if not STRIPE_SECRET_KEY:
     raise RuntimeError("STRIPE_SECRET_KEY manquant dans le fichier .env")
 
 stripe.api_key = STRIPE_SECRET_KEY
-
-# =========================================================
-# APP
-# =========================================================
 
 app = FastAPI(title="Face Aging API PRO")
 
@@ -125,15 +87,13 @@ RATE_LIMIT_STORE: dict[str, list[float]] = {}
 RATE_LIMIT_MAX_REQUESTS = int(os.getenv("RATE_LIMIT_MAX_REQUESTS", "10"))
 RATE_LIMIT_WINDOW_SECONDS = int(os.getenv("RATE_LIMIT_WINDOW_SECONDS", "60"))
 
-# =========================================================
-# DATABASE
-# =========================================================
 
 def get_db() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH, timeout=30)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     return conn
+
 
 def init_db():
     conn = get_db()
@@ -187,13 +147,11 @@ def init_db():
     conn.commit()
     conn.close()
 
+
 @app.on_event("startup")
 def startup():
     init_db()
 
-# =========================================================
-# SECURITY / AUTH
-# =========================================================
 
 def hash_password(password: str) -> str:
     salt = secrets.token_hex(16)
@@ -204,6 +162,7 @@ def hash_password(password: str) -> str:
         100_000
     ).hex()
     return f"{salt}${pwd_hash}"
+
 
 def verify_password(password: str, stored_hash: str) -> bool:
     try:
@@ -220,6 +179,7 @@ def verify_password(password: str, stored_hash: str) -> bool:
 
     return hmac.compare_digest(new_hash, pwd_hash)
 
+
 def create_access_token(user_id: int, email: str) -> str:
     now = datetime.now(timezone.utc)
     payload = {
@@ -230,6 +190,7 @@ def create_access_token(user_id: int, email: str) -> str:
     }
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
+
 def decode_access_token(token: str) -> dict:
     try:
         return jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
@@ -237,6 +198,7 @@ def decode_access_token(token: str) -> dict:
         raise HTTPException(status_code=401, detail="Token expiré")
     except jwt.InvalidTokenError:
         raise HTTPException(status_code=401, detail="Token invalide")
+
 
 def get_user_by_email(email: str) -> Optional[sqlite3.Row]:
     conn = get_db()
@@ -246,6 +208,7 @@ def get_user_by_email(email: str) -> Optional[sqlite3.Row]:
     conn.close()
     return user
 
+
 def get_user_by_id(user_id: int) -> Optional[sqlite3.Row]:
     conn = get_db()
     cur = conn.cursor()
@@ -253,6 +216,7 @@ def get_user_by_id(user_id: int) -> Optional[sqlite3.Row]:
     user = cur.fetchone()
     conn.close()
     return user
+
 
 def create_user(email: str, password: str) -> sqlite3.Row:
     conn = get_db()
@@ -275,12 +239,14 @@ def create_user(email: str, password: str) -> sqlite3.Row:
     conn.close()
     return user
 
+
 def update_user_credits(user_id: int, new_credits: int):
     conn = get_db()
     cur = conn.cursor()
     cur.execute("UPDATE users SET credits = ? WHERE id = ?", (new_credits, user_id))
     conn.commit()
     conn.close()
+
 
 def get_credit_transaction_by_stripe_payment_id(stripe_payment_id: str) -> Optional[sqlite3.Row]:
     conn = get_db()
@@ -292,6 +258,7 @@ def get_credit_transaction_by_stripe_payment_id(stripe_payment_id: str) -> Optio
     row = cur.fetchone()
     conn.close()
     return row
+
 
 def log_generation(
     user_id: int,
@@ -324,6 +291,7 @@ def log_generation(
     conn.commit()
     conn.close()
 
+
 def add_credit_transaction(
     user_id: int,
     transaction_type: str,
@@ -353,6 +321,7 @@ def add_credit_transaction(
     conn.commit()
     conn.close()
 
+
 def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(security),
 ) -> sqlite3.Row:
@@ -366,6 +335,7 @@ def get_current_user(
 
     return user
 
+
 def require_dev_admin(request: Request):
     if not DEV_ADMIN_SECRET:
         raise HTTPException(status_code=403, detail="Route désactivée")
@@ -373,9 +343,6 @@ def require_dev_admin(request: Request):
     if not header_value or not secrets.compare_digest(header_value, DEV_ADMIN_SECRET):
         raise HTTPException(status_code=403, detail="Accès refusé")
 
-# =========================================================
-# HELPERS
-# =========================================================
 
 def check_rate_limit(key: str):
     now = time.time()
@@ -393,6 +360,7 @@ def check_rate_limit(key: str):
     timestamps.append(now)
     RATE_LIMIT_STORE[key] = timestamps
 
+
 def client_ip(request: Request) -> str:
     forwarded = request.headers.get("x-forwarded-for")
     if forwarded:
@@ -401,17 +369,8 @@ def client_ip(request: Request) -> str:
         return request.client.host
     return "unknown"
 
+
 def validate_uploaded_image(file: UploadFile, content: bytes):
-    ext = Path(file.filename or "").suffix.lower()
-    if not ext:
-        ext = ".png"
-
-    if ext not in ALLOWED_IMAGE_EXTENSIONS:
-        raise HTTPException(
-            status_code=400,
-            detail="Extension non autorisée. Formats acceptés: jpg, jpeg, png, webp"
-        )
-
     if not content:
         raise HTTPException(status_code=400, detail="Fichier vide")
 
@@ -420,9 +379,192 @@ def validate_uploaded_image(file: UploadFile, content: bytes):
             status_code=400,
             detail=f"Fichier trop volumineux. Maximum {MAX_UPLOAD_MB} MB"
         )
-# =========================================================
-# ROUTES - PUBLIC
-# =========================================================
+
+
+def stripe_obj_get(obj: Any, key: str, default=None):
+    if obj is None:
+        return default
+
+    if isinstance(obj, dict):
+        return obj.get(key, default)
+
+    try:
+        value = obj[key]
+        if value is None:
+            return default
+        return value
+    except Exception:
+        pass
+
+    try:
+        value = getattr(obj, key)
+        if value is None:
+            return default
+        return value
+    except Exception:
+        return default
+
+
+def normalize_checkout_session_id(raw_value: Any) -> str:
+    raw = str(raw_value or "").strip()
+
+    if not raw:
+        return ""
+
+    for separator in ["&", "?", ";", " ", "\n", "\r", "\t"]:
+        if separator in raw:
+            raw = raw.split(separator)[0].strip()
+
+    if "cs_" in raw and not raw.startswith("cs_"):
+        raw = raw[raw.find("cs_"):].strip()
+        for separator in ["&", "?", ";", " ", "\n", "\r", "\t"]:
+            if separator in raw:
+                raw = raw.split(separator)[0].strip()
+
+    return raw
+
+
+def credit_paid_checkout_session(session_id: str, expected_email: Optional[str] = None) -> dict:
+    session_id = normalize_checkout_session_id(session_id)
+
+    if not session_id:
+        raise HTTPException(status_code=400, detail="session_id manquant")
+
+    if not session_id.startswith("cs_"):
+        raise HTTPException(status_code=400, detail="session_id Stripe invalide")
+
+    existing_tx = get_credit_transaction_by_stripe_payment_id(session_id)
+    if existing_tx:
+        user = get_user_by_id(existing_tx["user_id"])
+        return {
+            "success": True,
+            "message": "Session déjà traitée",
+            "credited_email": user["email"] if user else "",
+            "credits_added": 0,
+            "credits_total": int(user["credits"]) if user else 0,
+        }
+
+    try:
+        session = stripe.checkout.Session.retrieve(session_id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Impossible de lire la session Stripe: {str(e)}")
+
+    mode = stripe_obj_get(session, "mode", "")
+    if mode != "payment":
+        raise HTTPException(status_code=400, detail="Mode Stripe invalide")
+
+    amount_total = int(stripe_obj_get(session, "amount_total", 0))
+    payment_status = str(stripe_obj_get(session, "payment_status", "")).strip().lower()
+    if payment_status != "paid":
+        raise HTTPException(status_code=400, detail="Paiement non confirmé")
+
+    metadata = stripe_obj_get(session, "metadata", {}) or {}
+    email = str(stripe_obj_get(metadata, "user_email", "")).strip().lower()
+
+    if not email:
+        customer_email = stripe_obj_get(session, "customer_email", "")
+        email = str(customer_email).strip().lower()
+
+    if not email:
+        customer_details = stripe_obj_get(session, "customer_details", {}) or {}
+        email = str(stripe_obj_get(customer_details, "email", "")).strip().lower()
+
+    if not email:
+        raise HTTPException(status_code=400, detail="Email introuvable dans la session Stripe")
+
+    if expected_email and email != expected_email.lower().strip():
+        raise HTTPException(status_code=403, detail="Cette session Stripe n'appartient pas à cet utilisateur")
+
+    pack_key = str(stripe_obj_get(metadata, "pack_key", "")).strip()
+    selected_pack = CREDIT_PACKS.get(pack_key)
+    if not selected_pack:
+        raise HTTPException(status_code=400, detail="Pack Stripe invalide")
+
+    expected_amount = int(selected_pack["price"])
+    if amount_total != expected_amount:
+        raise HTTPException(status_code=400, detail="Montant Stripe invalide")
+
+    credits_to_add = int(selected_pack["credits"])
+    pack_name = str(selected_pack["label"]).strip()
+
+    if credits_to_add <= 0:
+        raise HTTPException(status_code=400, detail="credits_to_add invalide")
+
+    user = get_user_by_email(email)
+    if not user:
+        raise HTTPException(status_code=404, detail=f"Utilisateur introuvable pour {email}")
+
+    conn = get_db()
+    try:
+        cur = conn.cursor()
+
+        cur.execute(
+            "SELECT * FROM credit_transactions WHERE stripe_payment_id = ? LIMIT 1",
+            (session_id,)
+        )
+        existing_tx_in_conn = cur.fetchone()
+        if existing_tx_in_conn:
+            cur.execute("SELECT * FROM users WHERE id = ?", (existing_tx_in_conn["user_id"],))
+            existing_user = cur.fetchone()
+            return {
+                "success": True,
+                "message": "Session déjà traitée",
+                "credited_email": existing_user["email"] if existing_user else "",
+                "credits_added": 0,
+                "credits_total": int(existing_user["credits"]) if existing_user else 0,
+            }
+
+        cur.execute("SELECT credits FROM users WHERE id = ?", (user["id"],))
+        fresh_user = cur.fetchone()
+        if not fresh_user:
+            raise HTTPException(status_code=404, detail="Utilisateur introuvable")
+
+        current_credits = int(fresh_user["credits"])
+        new_credits = current_credits + credits_to_add
+
+        cur.execute(
+            "UPDATE users SET credits = ? WHERE id = ?",
+            (new_credits, user["id"])
+        )
+
+        cur.execute(
+            """
+            INSERT INTO credit_transactions
+            (user_id, transaction_type, amount, balance_after, stripe_payment_id, note, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                user["id"],
+                "purchase",
+                credits_to_add,
+                new_credits,
+                session_id,
+                f"Paiement Stripe - {pack_name}",
+                datetime.now(timezone.utc).isoformat(),
+            )
+        )
+
+        conn.commit()
+    except sqlite3.IntegrityError:
+        conn.rollback()
+        user_after = get_user_by_id(user["id"])
+        return {
+            "success": True,
+            "message": "Session déjà traitée",
+            "credited_email": user_after["email"] if user_after else email,
+            "credits_added": 0,
+            "credits_total": int(user_after["credits"]) if user_after else int(user["credits"]),
+        }
+    finally:
+        conn.close()
+
+    return {
+        "success": True,
+        "credited_email": email,
+        "credits_added": credits_to_add,
+        "credits_total": new_credits,
+    }
+
 
 @app.get("/")
 def root():
@@ -430,6 +572,8 @@ def root():
         "success": True,
         "message": "Face Aging API PRO is running"
     }
+
+
 @app.get("/payment-success")
 def payment_success(session_id: str = ""):
     message = "Payment successful. You can now return to the app."
@@ -439,7 +583,6 @@ def payment_success(session_id: str = ""):
 
         if clean_session_id:
             result = credit_paid_checkout_session(clean_session_id)
-            print("PAYMENT SUCCESS CREDIT RESULT:", result)
 
             credits_added = int(result.get("credits_added", 0))
             credits_total = int(result.get("credits_total", 0))
@@ -448,8 +591,7 @@ def payment_success(session_id: str = ""):
                 message = f"Payment successful. {credits_added} credits added. Total: {credits_total}."
             else:
                 message = f"Payment confirmed. Total credits: {credits_total}."
-    except Exception as e:
-        print("PAYMENT SUCCESS ERROR:", e)
+    except Exception:
         message = "Payment received, but automatic credit sync failed. Please contact support if credits do not appear."
 
     return HTMLResponse(f"""
@@ -462,6 +604,8 @@ def payment_success(session_id: str = ""):
       </body>
     </html>
     """)
+
+
 @app.get("/payment-cancel")
 def payment_cancel():
     return HTMLResponse("""
@@ -474,6 +618,8 @@ def payment_cancel():
       </body>
     </html>
     """)
+
+
 @app.post("/register")
 def register(email: str = Form(...), password: str = Form(...)):
     email = email.lower().strip()
@@ -504,6 +650,7 @@ def register(email: str = Form(...), password: str = Form(...)):
         },
     }
 
+
 @app.post("/login")
 def login(email: str = Form(...), password: str = Form(...)):
     email = email.lower().strip()
@@ -525,6 +672,7 @@ def login(email: str = Form(...), password: str = Form(...)):
             "created_at": user["created_at"],
         },
     }
+
 
 @app.post("/create-checkout-session")
 async def create_checkout_session(
@@ -580,9 +728,6 @@ async def create_checkout_session(
         "url": session.url,
     }
 
-# =========================================================
-# ROUTES - PRIVATE
-# =========================================================
 
 @app.get("/me")
 def me(user: sqlite3.Row = Depends(get_current_user)):
@@ -596,12 +741,14 @@ def me(user: sqlite3.Row = Depends(get_current_user)):
         },
     }
 
+
 @app.get("/credits")
 def credits(user: sqlite3.Row = Depends(get_current_user)):
     return {
         "success": True,
         "credits": user["credits"],
     }
+
 
 @app.get("/credit-transactions")
 def credit_transactions(user: sqlite3.Row = Depends(get_current_user)):
@@ -625,6 +772,7 @@ def credit_transactions(user: sqlite3.Row = Depends(get_current_user)):
         "transactions": [dict(row) for row in rows]
     }
 
+
 @app.post("/confirm-checkout-session")
 def confirm_checkout_session(
     data: dict = Body(...),
@@ -647,6 +795,8 @@ def confirm_checkout_session(
         "credited_email": result["credited_email"],
         "session_id": session_id,
     }
+
+
 @app.post("/stripe-webhook")
 async def stripe_webhook(request: Request):
     payload = await request.body()
@@ -658,12 +808,10 @@ async def stripe_webhook(request: Request):
             sig_header,
             STRIPE_WEBHOOK_SECRET
         )
-    except Exception as e:
-        print("STRIPE SIGNATURE ERROR:")
+    except Exception:
         return {"status": "signature error"}
 
     event_type = event["type"]
-    
 
     if event_type == "checkout.session.completed":
         try:
@@ -673,22 +821,17 @@ async def stripe_webhook(request: Request):
                 stripe_obj_get(raw_session, "id", "")
             )
 
-          
-
             if not session_id:
-                print("WEBHOOK: session id manquant")
                 return {"status": "ignored"}
 
-            result = credit_paid_checkout_session(session_id)
-            
+            credit_paid_checkout_session(session_id)
 
-        except Exception as e:
-            import traceback
-            print("WEBHOOK ERROR:")
-            traceback.print_exc()
+        except Exception:
             return {"status": "error handled"}
 
     return {"status": "success"}
+
+
 @app.post("/age")
 async def age_face(
     request: Request,
@@ -736,15 +879,12 @@ async def age_face(
         os.environ["FAL_KEY"] = FAL_KEY
 
         content = await file.read()
-    try:
-            validate_uploaded_image(file, content)
-    except Exception as e:
-        print("ERROR VALIDATION:", str(e))
-        raise
+        validate_uploaded_image(file, content)
 
         ext = Path(file.filename or "").suffix.lower()
-        if not ext:
+        if ext not in {".jpg", ".jpeg", ".png", ".webp"}:
             ext = ".png"
+
         input_path = UPLOAD_DIR / f"input_{uuid4().hex[:8]}{ext}"
         input_path.write_bytes(content)
 
@@ -828,9 +968,6 @@ async def age_face(
         except Exception:
             pass
 
-# =========================================================
-# ADMIN / DEV TEMPORARY ROUTES
-# =========================================================
 
 @app.get("/debug/user-by-email")
 def debug_user_by_email(email: str):
@@ -843,6 +980,7 @@ def debug_user_by_email(email: str):
         "credits": user["credits"],
         "created_at": user["created_at"],
     }
+
 
 @app.post("/dev/add-credits")
 def dev_add_credits(
