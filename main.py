@@ -410,17 +410,6 @@ def validate_uploaded_image(file: UploadFile, content: bytes):
             status_code=400,
             detail=f"Fichier trop volumineux. Maximum {MAX_UPLOAD_MB} MB"
         )
-
-    is_jpeg = content.startswith(b"\xff\xd8\xff")
-    is_png = content.startswith(b"\x89PNG\r\n\x1a\n")
-    is_webp = content.startswith(b"RIFF") and b"WEBP" in content[:20]
-
-    if not (is_jpeg or is_png or is_webp):
-        raise HTTPException(
-            status_code=400,
-            detail="Image invalide. Formats acceptés: jpg, jpeg, png, webp"
-        )
-
 # =========================================================
 # ROUTES - PUBLIC
 # =========================================================
