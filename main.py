@@ -740,7 +740,7 @@ async def create_checkout_session(
     session = stripe.checkout.Session.create(
         mode="payment",
         customer_email=email,
-        payment_method_types=["card"],
+        payment_method_types=["card", "mobilepay"],
         line_items=[
             {
                 "price_data": {
