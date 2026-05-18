@@ -21,22 +21,21 @@ import stripe
 
 CREDIT_PACKS = {
     "30": {
-        "price": 500,
+        "price": 3900,
         "credits": 30,
         "label": "Starter",
     },
     "100": {
-        "price": 1500,
+        "price": 11500,
         "credits": 100,
         "label": "Best Seller",
     },
     "300": {
-        "price": 4000,
+        "price": 29900,
         "credits": 300,
         "label": "Premium",
     },
 }
-
 # =========================================================
 # CONFIG
 # =========================================================
@@ -744,7 +743,7 @@ async def create_checkout_session(
         line_items=[
             {
                 "price_data": {
-                    "currency": "eur",
+                    "currency": "dkk",
                     "product_data": {
                         "name": f"{credits} credits pack",
                     },
