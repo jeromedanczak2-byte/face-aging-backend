@@ -77,9 +77,15 @@ DEV_ADMIN_SECRET = os.getenv("DEV_ADMIN_SECRET", "").strip()
 MAX_UPLOAD_MB = int(os.getenv("MAX_UPLOAD_MB", "10"))
 MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024
 
+DEMO_FREE_LIMIT = int(os.getenv("DEMO_FREE_LIMIT", "1"))
+DEMO_TARGET_AGE = int(os.getenv("DEMO_TARGET_AGE", "90"))
+DEMO_OUTPUT_MAX_WIDTH = int(os.getenv("DEMO_OUTPUT_MAX_WIDTH", "360"))
+DEMO_OUTPUT_QUALITY = int(os.getenv("DEMO_OUTPUT_QUALITY", "40"))
+DEMO_WATERMARK_TEXT = os.getenv("DEMO_WATERMARK_TEXT", "DEMO PREVIEW").strip()
+
 CORS_ORIGINS_RAW = os.getenv(
     "CORS_ORIGINS",
-    "http://localhost:1420,http://127.0.0.1:1420,http://tauri.localhost,https://tauri.localhost"
+    "http://localhost:1420,http://127.0.0.1:1420,http://tauri.localhost,https://tauri.localhost,https://faceagingstudio.com,https://www.faceagingstudio.com"
 )
 CORS_ORIGINS = [origin.strip() for origin in CORS_ORIGINS_RAW.split(",") if origin.strip()]
 
@@ -181,6 +187,28 @@ def init_db():
         CREATE UNIQUE INDEX IF NOT EXISTS idx_credit_transactions_stripe_payment_id
         ON credit_transactions(stripe_payment_id)
         WHERE stripe_payment_id IS NOT NULL
+    """)
+
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS demo_generations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ip_address TEXT,
+            client_token_hash TEXT,
+            output_filename TEXT,
+            created_at TEXT NOT NULL,
+            status TEXT NOT NULL,
+            error_message TEXT
+        )
+    """)
+
+    cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_demo_generations_ip_status
+        ON demo_generations(ip_address, status)
+    """)
+
+    cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_demo_generations_client_status
+        ON demo_generations(client_token_hash, status)
     """)
 
     conn.commit()
@@ -399,6 +427,233 @@ def client_ip(request: Request) -> str:
     if request.client:
         return request.client.host
     return "unknown"
+
+def normalize_demo_client_token(value: Optional[str]) -> str:
+    cleaned = str(value or "").strip()
+    return cleaned[:128]
+
+def hash_demo_client_token(value: str) -> Optional[str]:
+    if not value:
+        return None
+    secret = JWT_SECRET or "face-aging-demo"
+    return hashlib.sha256(f"{secret}:{value}".encode("utf-8")).hexdigest()
+
+def get_demo_success_count(ip_address: str, client_token_hash: Optional[str]) -> int:
+    conn = get_db()
+    cur = conn.cursor()
+
+    if client_token_hash:
+        cur.execute(
+            """
+            SELECT COUNT(*) as count FROM demo_generations
+            WHERE status = 'success'
+            AND (ip_address = ? OR client_token_hash = ?)
+            """,
+            (ip_address, client_token_hash),
+        )
+    else:
+        cur.execute(
+            """
+            SELECT COUNT(*) as count FROM demo_generations
+            WHERE status = 'success'
+            AND ip_address = ?
+            """,
+            (ip_address,),
+        )
+
+    count = int(cur.fetchone()["count"])
+    conn.close()
+    return count
+
+def check_demo_limit(ip_address: str, client_token_hash: Optional[str]):
+    count = get_demo_success_count(ip_address, client_token_hash)
+    if count >= DEMO_FREE_LIMIT:
+        return JSONResponse(
+            status_code=429,
+            content={
+                "success": False,
+                "error": "Demo limit reached",
+                "code": "DEMO_LIMIT_REACHED",
+            },
+        )
+    return None
+
+def log_demo_generation(
+    ip_address: str,
+    client_token_hash: Optional[str],
+    output_filename: Optional[str],
+    status: str,
+    error_message: Optional[str] = None,
+):
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        INSERT INTO demo_generations
+        (ip_address, client_token_hash, output_filename, created_at, status, error_message)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (
+            ip_address,
+            client_token_hash,
+            output_filename,
+            datetime.now(timezone.utc).isoformat(),
+            status,
+            error_message,
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+def make_demo_watermarked_image(img_bytes: bytes) -> bytes:
+    try:
+        from io import BytesIO
+        from PIL import Image, ImageDraw, ImageFont
+    except Exception as e:
+        raise RuntimeError("Pillow is required for demo watermark") from e
+
+    def load_demo_font(size: int):
+        font_candidates = [
+            "DejaVuSans-Bold.ttf",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+            "arial.ttf",
+            "Arial.ttf",
+            "C:/Windows/Fonts/arialbd.ttf",
+            "C:/Windows/Fonts/arial.ttf",
+        ]
+        for font_path in font_candidates:
+            try:
+                return ImageFont.truetype(font_path, size=size)
+            except Exception:
+                continue
+        return ImageFont.load_default()
+
+    def text_size(draw: ImageDraw.ImageDraw, text: str, font) -> tuple[int, int]:
+        try:
+            box = draw.textbbox((0, 0), text, font=font, stroke_width=2)
+            return box[2] - box[0], box[3] - box[1]
+        except Exception:
+            return len(text) * 9, 18
+
+    def fitted_font(draw: ImageDraw.ImageDraw, text: str, max_width: int, start_size: int, min_size: int):
+        size = start_size
+        while size > min_size:
+            font = load_demo_font(size)
+            width, _ = text_size(draw, text, font)
+            if width <= max_width:
+                return font
+            size -= 2
+        return load_demo_font(min_size)
+
+    with Image.open(BytesIO(img_bytes)) as img:
+        img = img.convert("RGB")
+        try:
+            resample_filter = Image.Resampling.LANCZOS
+            rotate_filter = Image.Resampling.BICUBIC
+        except AttributeError:
+            resample_filter = Image.LANCZOS
+            rotate_filter = Image.BICUBIC
+
+        img.thumbnail((DEMO_OUTPUT_MAX_WIDTH, DEMO_OUTPUT_MAX_WIDTH), resample_filter)
+
+        overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
+        draw = ImageDraw.Draw(overlay)
+
+        watermark_text = DEMO_WATERMARK_TEXT or "DEMO PREVIEW"
+        site_text = "FACEAGINGSTUDIO.COM"
+        max_text_width = int(img.width * 0.72)
+
+        primary_font = fitted_font(
+            draw,
+            watermark_text,
+            max_text_width,
+            start_size=max(20, min(img.width // 9, 34)),
+            min_size=14,
+        )
+        secondary_font = fitted_font(
+            draw,
+            site_text,
+            max_text_width,
+            start_size=max(11, min(img.width // 18, 18)),
+            min_size=9,
+        )
+
+        primary_w, primary_h = text_size(draw, watermark_text, primary_font)
+        site_w, site_h = text_size(draw, site_text, secondary_font)
+
+        box_padding_x = max(12, img.width // 28)
+        box_padding_y = max(10, img.height // 36)
+        box_w = max(primary_w, site_w) + (box_padding_x * 2)
+        box_h = primary_h + site_h + (box_padding_y * 2) + 8
+        box_x = (img.width - box_w) // 2
+        box_y = (img.height - box_h) // 2
+        box_radius = max(14, min(img.width, img.height) // 18)
+
+        draw.rounded_rectangle(
+            (box_x, box_y, box_x + box_w, box_y + box_h),
+            radius=box_radius,
+            fill=(0, 0, 0, 82),
+            outline=(255, 255, 255, 34),
+            width=1,
+        )
+
+        primary_x = box_x + (box_w - primary_w) // 2
+        primary_y = box_y + box_padding_y - 2
+        site_x = box_x + (box_w - site_w) // 2
+        site_y = primary_y + primary_h + 8
+
+        draw.text(
+            (primary_x, primary_y),
+            watermark_text,
+            fill=(255, 255, 255, 208),
+            font=primary_font,
+            stroke_width=1,
+            stroke_fill=(0, 0, 0, 95),
+        )
+        draw.text(
+            (site_x, site_y),
+            site_text,
+            fill=(255, 255, 255, 180),
+            font=secondary_font,
+            stroke_width=1,
+            stroke_fill=(0, 0, 0, 88),
+        )
+
+        diagonal_text = " FACEAGINGSTUDIO.COM DEMO "
+        diagonal_font = fitted_font(
+            draw,
+            diagonal_text,
+            int(img.width * 0.95),
+            start_size=max(11, min(img.width // 20, 18)),
+            min_size=9,
+        )
+        diagonal_layer = Image.new("RGBA", img.size, (0, 0, 0, 0))
+        diagonal_draw = ImageDraw.Draw(diagonal_layer)
+        diagonal_w, diagonal_h = text_size(diagonal_draw, diagonal_text, diagonal_font)
+        step_y = max(90, diagonal_h * 4)
+        step_x = max(90, diagonal_w // 2)
+        for y in range(-img.height, img.height * 2, step_y):
+            for x in range(-img.width, img.width * 2, step_x):
+                diagonal_draw.text(
+                    (x, y),
+                    diagonal_text,
+                    fill=(255, 255, 255, 18),
+                    font=diagonal_font,
+                    stroke_width=1,
+                    stroke_fill=(0, 0, 0, 12),
+                )
+        diagonal_layer = diagonal_layer.rotate(-24, resample=rotate_filter, expand=False, center=(img.width // 2, img.height // 2))
+        overlay = Image.alpha_composite(overlay, diagonal_layer)
+
+        border_width = max(2, img.width // 120)
+        border_draw = ImageDraw.Draw(overlay)
+        for i in range(border_width):
+            border_draw.rectangle((i, i, img.width - 1 - i, img.height - 1 - i), outline=(255, 255, 255, 22))
+
+        watermarked = Image.alpha_composite(img.convert("RGBA"), overlay).convert("RGB")
+        output = BytesIO()
+        watermarked.save(output, format="JPEG", quality=DEMO_OUTPUT_QUALITY, optimize=True, subsampling=2)
+        return output.getvalue()
 
 def validate_uploaded_image(file: UploadFile, content: bytes):
     ext = Path(file.filename or "input.jpg").suffix.lower()
@@ -995,6 +1250,108 @@ async def age_face(
             credits_used=0,
             output_filename=output_filename,
             ip_address=ip,
+            status="error",
+            error_message=str(e),
+        )
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "error": str(e)},
+        )
+    finally:
+        try:
+            if input_path and input_path.exists():
+                input_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+# =========================================================
+# ROUTES - WEB DEMO / ONLINE APP
+# =========================================================
+
+@app.post("/web/demo-age")
+async def web_demo_age(
+    request: Request,
+    file: UploadFile = File(...),
+    age: int = Form(...),
+    demo_client: str = Form(""),
+):
+    ip = client_ip(request)
+    clean_demo_client = normalize_demo_client_token(demo_client)
+    client_token_hash = hash_demo_client_token(clean_demo_client)
+
+    rate_key = f"web-demo-age:{ip}:{client_token_hash or 'no-client'}"
+    check_rate_limit(rate_key)
+
+    limit_response = check_demo_limit(ip, client_token_hash)
+    if limit_response:
+        return limit_response
+
+    input_path = None
+    output_filename = None
+
+    if age < 1 or age > MAX_AGE:
+        raise HTTPException(status_code=400, detail=f"L'âge doit être entre 1 et {MAX_AGE}")
+
+    try:
+        os.environ["FAL_KEY"] = FAL_KEY
+
+        content = await file.read()
+        validate_uploaded_image(file, content)
+
+        ext = Path(file.filename or "input.jpg").suffix.lower() or ".jpg"
+        input_path = UPLOAD_DIR / f"demo_input_{uuid4().hex[:8]}{ext}"
+        input_path.write_bytes(content)
+
+        uploaded_url = fal_client.upload_file(str(input_path))
+
+        result = fal_client.subscribe(
+            MODEL_ID,
+            arguments={
+                "image_url": uploaded_url,
+                "target_age": age,
+                "preserve_identity": False,
+            },
+        )
+
+        images = result.get("images", [])
+        if not images or not images[0].get("url"):
+            raise RuntimeError("Réponse FAL invalide : aucune image retournée")
+
+        image_url = images[0]["url"]
+
+        response = requests.get(image_url, timeout=120)
+        response.raise_for_status()
+        demo_img_bytes = make_demo_watermarked_image(response.content)
+
+        output_filename = f"demo_aged_{age}_{uuid4().hex[:8]}.jpg"
+        output_path = OUTPUT_DIR / output_filename
+        output_path.write_bytes(demo_img_bytes)
+
+        log_demo_generation(
+            ip_address=ip,
+            client_token_hash=client_token_hash,
+            output_filename=output_filename,
+            status="success",
+            error_message=None,
+        )
+
+        return {
+            "success": True,
+            "demo": True,
+            "watermark": True,
+            "low_resolution": True,
+            "image_url": f"{PUBLIC_BASE_URL}/outputs/{output_filename}",
+            "filename": output_filename,
+            "age": age,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        log_demo_generation(
+            ip_address=ip,
+            client_token_hash=client_token_hash,
+            output_filename=output_filename,
             status="error",
             error_message=str(e),
         )
