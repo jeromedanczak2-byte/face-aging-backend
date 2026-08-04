@@ -581,19 +581,19 @@ def make_demo_watermarked_image(img_bytes: bytes) -> bytes:
         primary_w, primary_h = text_size(draw, watermark_text, primary_font)
         site_w, site_h = text_size(draw, site_text, secondary_font)
 
-        box_padding_x = max(12, img.width // 28)
-        box_padding_y = max(10, img.height // 36)
-        box_w = max(primary_w, site_w) + (box_padding_x * 2)
+        box_padding_x = max(14, img.width // 24)
+        box_padding_y = max(9, img.height // 44)
+        box_w = img.width - (max(10, img.width // 28) * 2)
         box_h = primary_h + site_h + (box_padding_y * 2) + 8
         box_x = (img.width - box_w) // 2
-        box_y = (img.height - box_h) // 2
-        box_radius = max(14, min(img.width, img.height) // 18)
+        box_y = img.height - box_h - max(10, img.height // 32)
+        box_radius = max(12, min(img.width, img.height) // 22)
 
         draw.rounded_rectangle(
             (box_x, box_y, box_x + box_w, box_y + box_h),
             radius=box_radius,
-            fill=(0, 0, 0, 82),
-            outline=(255, 255, 255, 34),
+            fill=(0, 0, 0, 118),
+            outline=(255, 255, 255, 58),
             width=1,
         )
 
@@ -605,18 +605,18 @@ def make_demo_watermarked_image(img_bytes: bytes) -> bytes:
         draw.text(
             (primary_x, primary_y),
             watermark_text,
-            fill=(255, 255, 255, 208),
+            fill=(255, 255, 255, 235),
             font=primary_font,
             stroke_width=1,
-            stroke_fill=(0, 0, 0, 95),
+            stroke_fill=(0, 0, 0, 130),
         )
         draw.text(
             (site_x, site_y),
             site_text,
-            fill=(255, 255, 255, 180),
+            fill=(255, 255, 255, 205),
             font=secondary_font,
             stroke_width=1,
-            stroke_fill=(0, 0, 0, 88),
+            stroke_fill=(0, 0, 0, 110),
         )
 
         diagonal_text = " FACEAGINGSTUDIO.COM DEMO "
@@ -630,17 +630,17 @@ def make_demo_watermarked_image(img_bytes: bytes) -> bytes:
         diagonal_layer = Image.new("RGBA", img.size, (0, 0, 0, 0))
         diagonal_draw = ImageDraw.Draw(diagonal_layer)
         diagonal_w, diagonal_h = text_size(diagonal_draw, diagonal_text, diagonal_font)
-        step_y = max(90, diagonal_h * 4)
-        step_x = max(90, diagonal_w // 2)
+        step_y = max(72, diagonal_h * 3)
+        step_x = max(80, diagonal_w // 2)
         for y in range(-img.height, img.height * 2, step_y):
             for x in range(-img.width, img.width * 2, step_x):
                 diagonal_draw.text(
                     (x, y),
                     diagonal_text,
-                    fill=(255, 255, 255, 18),
+                    fill=(255, 255, 255, 34),
                     font=diagonal_font,
                     stroke_width=1,
-                    stroke_fill=(0, 0, 0, 12),
+                    stroke_fill=(0, 0, 0, 22),
                 )
         diagonal_layer = diagonal_layer.rotate(-24, resample=rotate_filter, expand=False, center=(img.width // 2, img.height // 2))
         overlay = Image.alpha_composite(overlay, diagonal_layer)
