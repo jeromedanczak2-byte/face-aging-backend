@@ -9,6 +9,8 @@ from uuid import uuid4
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Any
 import os
+import asyncio
+import json
 import sqlite3
 import hashlib
 import hmac
@@ -82,6 +84,7 @@ DEMO_TARGET_AGE = int(os.getenv("DEMO_TARGET_AGE", "90"))
 DEMO_OUTPUT_MAX_WIDTH = int(os.getenv("DEMO_OUTPUT_MAX_WIDTH", "360"))
 DEMO_OUTPUT_QUALITY = int(os.getenv("DEMO_OUTPUT_QUALITY", "40"))
 DEMO_WATERMARK_TEXT = os.getenv("DEMO_WATERMARK_TEXT", "DEMO PREVIEW").strip()
+MAX_WEB_BATCH_AGES = int(os.getenv("MAX_WEB_BATCH_AGES", "5"))
 
 CORS_ORIGINS_RAW = os.getenv(
     "CORS_ORIGINS",
@@ -379,6 +382,181 @@ def add_credit_transaction(
     )
     conn.commit()
     conn.close()
+
+
+def reserve_user_credits(user_id: int, credits_needed: int, note: str) -> dict:
+    if credits_needed <= 0:
+        raise ValueError("credits_needed must be positive")
+
+    conn = get_db()
+    try:
+        cur = conn.cursor()
+        cur.execute("BEGIN IMMEDIATE")
+        cur.execute("SELECT credits FROM users WHERE id = ?", (user_id,))
+        row = cur.fetchone()
+
+        if not row:
+            conn.rollback()
+            raise HTTPException(status_code=401, detail="Utilisateur introuvable")
+
+        current_credits = int(row["credits"])
+        if current_credits < credits_needed:
+            conn.rollback()
+            raise HTTPException(
+                status_code=402,
+                detail={
+                    "success": False,
+                    "error": "Crédits insuffisants",
+                    "code": "INSUFFICIENT_CREDITS",
+                    "credits_available": current_credits,
+                    "credits_needed": credits_needed,
+                },
+            )
+
+        new_credits = current_credits - credits_needed
+        cur.execute("UPDATE users SET credits = ? WHERE id = ?", (new_credits, user_id))
+        cur.execute(
+            """
+            INSERT INTO credit_transactions
+            (user_id, transaction_type, amount, balance_after, stripe_payment_id, note, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                user_id,
+                "usage",
+                -credits_needed,
+                new_credits,
+                None,
+                note,
+                datetime.now(timezone.utc).isoformat(),
+            ),
+        )
+        conn.commit()
+        return {
+            "credits_before": current_credits,
+            "credits_after": new_credits,
+            "credits_reserved": credits_needed,
+        }
+    except HTTPException:
+        raise
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+def refund_user_credits(user_id: int, credits_to_refund: int, note: str) -> int:
+    if credits_to_refund <= 0:
+        fresh_user = get_user_by_id(user_id)
+        return int(fresh_user["credits"]) if fresh_user else 0
+
+    conn = get_db()
+    try:
+        cur = conn.cursor()
+        cur.execute("BEGIN IMMEDIATE")
+        cur.execute("SELECT credits FROM users WHERE id = ?", (user_id,))
+        row = cur.fetchone()
+
+        if not row:
+            conn.rollback()
+            return 0
+
+        current_credits = int(row["credits"])
+        new_credits = current_credits + credits_to_refund
+        cur.execute("UPDATE users SET credits = ? WHERE id = ?", (new_credits, user_id))
+        cur.execute(
+            """
+            INSERT INTO credit_transactions
+            (user_id, transaction_type, amount, balance_after, stripe_payment_id, note, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                user_id,
+                "refund",
+                credits_to_refund,
+                new_credits,
+                None,
+                note,
+                datetime.now(timezone.utc).isoformat(),
+            ),
+        )
+        conn.commit()
+        return new_credits
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+def parse_web_batch_ages(raw_ages: str) -> list[int]:
+    raw_ages = (raw_ages or "").strip()
+    if not raw_ages:
+        raise HTTPException(status_code=400, detail="Aucun âge sélectionné")
+
+    try:
+        if raw_ages.startswith("["):
+            parsed = json.loads(raw_ages)
+        else:
+            parsed = [value.strip() for value in raw_ages.split(",")]
+    except Exception:
+        raise HTTPException(status_code=400, detail="Format des âges invalide")
+
+    ages: list[int] = []
+    for value in parsed:
+        try:
+            age = int(value)
+        except Exception:
+            raise HTTPException(status_code=400, detail="Format des âges invalide")
+
+        if age < 1 or age > MAX_AGE:
+            raise HTTPException(status_code=400, detail=f"L'âge doit être entre 1 et {MAX_AGE}")
+
+        if age not in ages:
+            ages.append(age)
+
+    if not ages:
+        raise HTTPException(status_code=400, detail="Aucun âge sélectionné")
+
+    if len(ages) > MAX_WEB_BATCH_AGES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Maximum {MAX_WEB_BATCH_AGES} âges par génération web mobile",
+        )
+
+    return ages
+
+def generate_paid_web_age_from_uploaded_url(uploaded_url: str, age: int, ip: Optional[str]) -> dict:
+    preserve_identity = age < 60
+
+    result = fal_client.subscribe(
+        MODEL_ID,
+        arguments={
+            "image_url": uploaded_url,
+            "target_age": age,
+            "preserve_identity": preserve_identity,
+        },
+    )
+
+    images = result.get("images", [])
+    if not images or not images[0].get("url"):
+        raise RuntimeError("Réponse FAL invalide : aucune image retournée")
+
+    image_url = images[0]["url"]
+    response = requests.get(image_url, timeout=120)
+    response.raise_for_status()
+
+    output_filename = f"web_aged_{age}_{uuid4().hex[:8]}.png"
+    output_path = OUTPUT_DIR / output_filename
+    output_path.write_bytes(response.content)
+
+    return {
+        "success": True,
+        "age": age,
+        "image_url": f"{PUBLIC_BASE_URL}/outputs/{output_filename}",
+        "file_path": str(output_path),
+        "filename": output_filename,
+    }
+
 
 def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(security),
@@ -1263,6 +1441,145 @@ async def age_face(
                 input_path.unlink(missing_ok=True)
         except Exception:
             pass
+
+
+@app.post("/web/age-batch")
+async def web_age_batch(
+    request: Request,
+    file: UploadFile = File(...),
+    ages: str = Form(...),
+    user: sqlite3.Row = Depends(get_current_user),
+):
+    ip = client_ip(request)
+    user_id = int(user["id"])
+    requested_ages = parse_web_batch_ages(ages)
+    credits_needed = len(requested_ages)
+
+    rate_key = f"web-age-batch:{user_id}:{ip}"
+    check_rate_limit(rate_key)
+
+    input_path = None
+    reserved = False
+    reserved_count = 0
+
+    try:
+        content = await file.read()
+        validate_uploaded_image(file, content)
+
+        reserve_user_credits(
+            user_id=user_id,
+            credits_needed=credits_needed,
+            note=f"Réservation génération web mobile âges {', '.join(map(str, requested_ages))}",
+        )
+        reserved = True
+        reserved_count = credits_needed
+
+        os.environ["FAL_KEY"] = FAL_KEY
+
+        ext = Path(file.filename or "input.jpg").suffix.lower() or ".jpg"
+        input_path = UPLOAD_DIR / f"web_batch_input_{uuid4().hex[:8]}{ext}"
+        input_path.write_bytes(content)
+
+        uploaded_url = fal_client.upload_file(str(input_path))
+
+        tasks = [
+            asyncio.to_thread(generate_paid_web_age_from_uploaded_url, uploaded_url, age, ip)
+            for age in requested_ages
+        ]
+
+        raw_results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        results = []
+        success_count = 0
+        failed_count = 0
+
+        for age, raw_result in zip(requested_ages, raw_results):
+            if isinstance(raw_result, Exception):
+                failed_count += 1
+                error_message = str(raw_result)
+                log_generation(
+                    user_id=user_id,
+                    requested_age=age,
+                    credits_used=0,
+                    output_filename=None,
+                    ip_address=ip,
+                    status="error",
+                    error_message=error_message,
+                )
+                results.append({
+                    "success": False,
+                    "age": age,
+                    "error": error_message,
+                })
+                continue
+
+            success_count += 1
+            log_generation(
+                user_id=user_id,
+                requested_age=age,
+                credits_used=1,
+                output_filename=raw_result.get("filename"),
+                ip_address=ip,
+                status="success",
+                error_message=None,
+            )
+            results.append(raw_result)
+
+        if failed_count > 0:
+            credits_remaining = refund_user_credits(
+                user_id=user_id,
+                credits_to_refund=failed_count,
+                note=f"Remboursement génération web mobile échouée : {failed_count} crédit(s)",
+            )
+        else:
+            fresh_user = get_user_by_id(user_id)
+            credits_remaining = int(fresh_user["credits"]) if fresh_user else 0
+
+        return {
+            "success": success_count > 0,
+            "mode": "web_batch",
+            "ages": requested_ages,
+            "credits_used": success_count,
+            "credits_refunded": failed_count,
+            "credits_remaining": credits_remaining,
+            "results": results,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        if reserved and reserved_count > 0:
+            try:
+                refund_user_credits(
+                    user_id=user_id,
+                    credits_to_refund=reserved_count,
+                    note="Remboursement génération web mobile après erreur globale",
+                )
+            except Exception as refund_error:
+                print("WEB BATCH REFUND ERROR:", refund_error)
+
+        for age in requested_ages:
+            log_generation(
+                user_id=user_id,
+                requested_age=age,
+                credits_used=0,
+                output_filename=None,
+                ip_address=ip,
+                status="error",
+                error_message=str(e),
+            )
+
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "error": str(e)},
+        )
+    finally:
+        try:
+            if input_path and input_path.exists():
+                input_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+
 
 # =========================================================
 # ROUTES - WEB DEMO / ONLINE APP
