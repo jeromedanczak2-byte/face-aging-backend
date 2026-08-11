@@ -65,6 +65,8 @@ MODEL_ID = os.getenv("MODEL_ID", "fal-ai/image-apps-v2/age-modify")
 
 STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY", "").strip()
 STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET", "").strip()
+GA4_MEASUREMENT_ID = "G-FDGNC88XDV"
+GA4_API_SECRET = os.getenv("GA4_API_SECRET", "").strip()
 STRIPE_SUCCESS_URL = os.getenv(
     "STRIPE_SUCCESS_URL",
     "http://localhost:1420/?session_id={CHECKOUT_SESSION_ID}",
@@ -1110,6 +1112,33 @@ def register(email: str = Form(...), password: str = Form(...)):
 
     user = create_user(email, password)
     token = create_access_token(user["id"], user["email"])
+
+    if GA4_API_SECRET:
+        try:
+            requests.post(
+                "https://www.google-analytics.com/mp/collect",
+                params={
+                    "measurement_id": GA4_MEASUREMENT_ID,
+                    "api_secret": GA4_API_SECRET,
+                },
+                json={
+                    "client_id": f"fas.{user['id']}",
+                    "user_id": str(user["id"]),
+                    "events": [
+                        {
+                            "name": "sign_up",
+                            "params": {
+                                "method": "email",
+                                "session_id": int(time.time()),
+                                "engagement_time_msec": 1,
+                            },
+                        }
+                    ],
+                },
+                timeout=3,
+            )
+        except Exception as e:
+            print("GA4 SIGN_UP ERROR:", e)
 
     return {
         "success": True,
