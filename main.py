@@ -67,6 +67,13 @@ STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY", "").strip()
 STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET", "").strip()
 GA4_MEASUREMENT_ID = "G-FDGNC88XDV"
 GA4_API_SECRET = os.getenv("GA4_API_SECRET", "").strip()
+WINDOWS_ANALYTICS_EVENTS = {
+    "windows_app_open",
+    "login",
+    "begin_checkout",
+    "generation_start",
+    "generation_success",
+}
 STRIPE_SUCCESS_URL = os.getenv(
     "STRIPE_SUCCESS_URL",
     "http://localhost:1420/?session_id={CHECKOUT_SESSION_ID}",
@@ -1174,6 +1181,65 @@ def login(email: str = Form(...), password: str = Form(...)):
             "created_at": user["created_at"],
         },
     }
+
+@app.post("/analytics/windows")
+async def analytics_windows(request: Request):
+    data = await request.json()
+    event_name = str(data.get("event", "")).strip()
+    client_id = str(data.get("client_id", "")).strip()[:128]
+
+    if event_name not in WINDOWS_ANALYTICS_EVENTS:
+        raise HTTPException(status_code=400, detail="Invalid analytics event")
+
+    if not client_id:
+        raise HTTPException(status_code=400, detail="Missing analytics client_id")
+
+    user_id = None
+    if event_name != "windows_app_open":
+        authorization = request.headers.get("authorization", "").strip()
+        if not authorization.lower().startswith("bearer "):
+            raise HTTPException(status_code=401, detail="Missing analytics authorization")
+
+        payload = decode_access_token(authorization.split(" ", 1)[1].strip())
+        user_id = int(payload["sub"])
+        if not get_user_by_id(user_id):
+            raise HTTPException(status_code=401, detail="Utilisateur introuvable")
+
+    if not GA4_API_SECRET:
+        return {"success": True, "sent": False}
+
+    ga4_payload = {
+        "client_id": client_id,
+        "events": [
+            {
+                "name": event_name,
+                "params": {
+                    "surface": "windows_app",
+                    "session_id": int(time.time()),
+                    "engagement_time_msec": 1,
+                },
+            }
+        ],
+    }
+
+    if user_id is not None:
+        ga4_payload["user_id"] = str(user_id)
+
+    try:
+        response = requests.post(
+            "https://www.google-analytics.com/mp/collect",
+            params={
+                "measurement_id": GA4_MEASUREMENT_ID,
+                "api_secret": GA4_API_SECRET,
+            },
+            json=ga4_payload,
+            timeout=3,
+        )
+        response.raise_for_status()
+        return {"success": True, "sent": True}
+    except Exception as e:
+        print("GA4 WINDOWS ANALYTICS ERROR:", e)
+        return {"success": True, "sent": False}
 
 @app.post("/create-checkout-session")
 async def create_checkout_session(
