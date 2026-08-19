@@ -67,6 +67,8 @@ STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY", "").strip()
 STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET", "").strip()
 GA4_MEASUREMENT_ID = "G-FDGNC88XDV"
 GA4_API_SECRET = os.getenv("GA4_API_SECRET", "").strip()
+RESEND_API_KEY = os.getenv("RESEND_API_KEY", "").strip()
+RESEND_FROM_EMAIL = os.getenv("RESEND_FROM_EMAIL", "Face Aging Studio <noreply@faceagingstudio.com>").strip()
 WINDOWS_ANALYTICS_EVENTS = {
     "windows_app_open",
     "login",
@@ -908,6 +910,366 @@ def normalize_checkout_session_id(raw_value: Any) -> str:
 
     return raw
 
+
+def email_language_from_accept_language(value: str) -> str:
+    primary_language = str(value or "").split(",", 1)[0].split(";", 1)[0].strip().lower()
+
+    if primary_language.startswith("fr"):
+        return "fr"
+    if primary_language.startswith("es"):
+        return "es"
+    if primary_language.startswith("da"):
+        return "da"
+    return "en"
+
+
+def email_language_from_country(country: str) -> str:
+    country = str(country or "").strip().upper()
+
+    if country == "FR":
+        return "fr"
+    if country == "ES":
+        return "es"
+    if country == "DK":
+        return "da"
+    return "en"
+
+
+def send_resend_email(
+    to_email: str,
+    subject: str,
+    html_content: str,
+    text_content: str,
+    idempotency_key: Optional[str] = None,
+) -> bool:
+    if not RESEND_API_KEY:
+        print("RESEND EMAIL SKIPPED: RESEND_API_KEY manquant")
+        return False
+
+    headers = {
+        "Authorization": f"Bearer {RESEND_API_KEY}",
+        "Content-Type": "application/json",
+    }
+
+    if idempotency_key:
+        headers["Idempotency-Key"] = idempotency_key[:256]
+
+    payload = {
+        "from": RESEND_FROM_EMAIL,
+        "to": [str(to_email).strip()],
+        "subject": subject,
+        "html": html_content,
+        "text": text_content,
+    }
+
+    try:
+        response = requests.post(
+            "https://api.resend.com/emails",
+            headers=headers,
+            json=payload,
+            timeout=5,
+        )
+        response.raise_for_status()
+        return True
+    except Exception as e:
+        print("RESEND EMAIL ERROR:", e)
+        return False
+
+
+def send_welcome_email(to_email: str, language: str, user_id: int) -> bool:
+    language = language if language in {"en", "fr", "es", "da"} else "en"
+
+    messages = {
+        "en": {
+            "subject": "Welcome to Face Aging Studio 👋",
+            "text": """Hello,
+
+Welcome to Face Aging Studio, and thank you for creating your account.
+
+Your account is now active. You can use it both in the Web App and in the Windows application, with the same account and credit balance.
+
+Discover what your face could look like at different ages using artificial intelligence.
+
+Web App: https://faceagingstudio.com/app/
+Free Demo: https://faceagingstudio.com/demo/
+
+If you need any help, feel free to contact us.
+
+Thank you for choosing Face Aging Studio.
+
+See you soon,
+The Face Aging Studio Team
+https://faceagingstudio.com""",
+            "html": """<p>Hello,</p>
+<p>Welcome to <strong>Face Aging Studio</strong>, and thank you for creating your account.</p>
+<p>Your account is now active. You can use it both in the <strong>Web App</strong> and in the <strong>Windows application</strong>, with the same account and credit balance.</p>
+<p>Discover what your face could look like at different ages using artificial intelligence.</p>
+<p><strong>Web App:</strong> <a href="https://faceagingstudio.com/app/">https://faceagingstudio.com/app/</a><br>
+<strong>Free Demo:</strong> <a href="https://faceagingstudio.com/demo/">https://faceagingstudio.com/demo/</a></p>
+<p>If you need any help, feel free to contact us.</p>
+<p>Thank you for choosing <strong>Face Aging Studio</strong>.</p>
+<p>See you soon,<br>
+<strong>The Face Aging Studio Team</strong><br>
+<a href="https://faceagingstudio.com">https://faceagingstudio.com</a></p>""",
+        },
+        "fr": {
+            "subject": "Bienvenue sur Face Aging Studio 👋",
+            "text": """Bonjour,
+
+Bienvenue sur Face Aging Studio et merci d’avoir créé votre compte.
+
+Votre compte est maintenant actif. Vous pouvez l’utiliser aussi bien sur la Web App que sur l’application Windows, avec le même compte et le même solde de crédits.
+
+Découvrez à quoi pourrait ressembler votre visage à différents âges grâce à l’intelligence artificielle.
+
+Web App : https://faceagingstudio.com/app/
+Démo gratuite : https://faceagingstudio.com/demo/
+
+Si vous avez besoin d’aide, n’hésitez pas à nous contacter.
+
+Merci d’avoir choisi Face Aging Studio.
+
+À bientôt,
+L’équipe Face Aging Studio
+https://faceagingstudio.com""",
+            "html": """<p>Bonjour,</p>
+<p>Bienvenue sur <strong>Face Aging Studio</strong> et merci d’avoir créé votre compte.</p>
+<p>Votre compte est maintenant actif. Vous pouvez l’utiliser aussi bien sur la <strong>Web App</strong> que sur l’<strong>application Windows</strong>, avec le même compte et le même solde de crédits.</p>
+<p>Découvrez à quoi pourrait ressembler votre visage à différents âges grâce à l’intelligence artificielle.</p>
+<p><strong>Web App :</strong> <a href="https://faceagingstudio.com/app/">https://faceagingstudio.com/app/</a><br>
+<strong>Démo gratuite :</strong> <a href="https://faceagingstudio.com/demo/">https://faceagingstudio.com/demo/</a></p>
+<p>Si vous avez besoin d’aide, n’hésitez pas à nous contacter.</p>
+<p>Merci d’avoir choisi <strong>Face Aging Studio</strong>.</p>
+<p>À bientôt,<br>
+<strong>L’équipe Face Aging Studio</strong><br>
+<a href="https://faceagingstudio.com">https://faceagingstudio.com</a></p>""",
+        },
+        "es": {
+            "subject": "Bienvenido a Face Aging Studio 👋",
+            "text": """Hola,
+
+Bienvenido a Face Aging Studio y gracias por crear tu cuenta.
+
+Tu cuenta ya está activa. Puedes utilizarla tanto en la Web App como en la aplicación para Windows, con la misma cuenta y el mismo saldo de créditos.
+
+Descubre cómo podría verse tu rostro a diferentes edades gracias a la inteligencia artificial.
+
+Web App: https://faceagingstudio.com/app/
+Demo gratuita: https://faceagingstudio.com/demo/
+
+Si necesitas ayuda, no dudes en ponerte en contacto con nosotros.
+
+Gracias por elegir Face Aging Studio.
+
+Hasta pronto,
+El equipo de Face Aging Studio
+https://faceagingstudio.com""",
+            "html": """<p>Hola,</p>
+<p>Bienvenido a <strong>Face Aging Studio</strong> y gracias por crear tu cuenta.</p>
+<p>Tu cuenta ya está activa. Puedes utilizarla tanto en la <strong>Web App</strong> como en la <strong>aplicación para Windows</strong>, con la misma cuenta y el mismo saldo de créditos.</p>
+<p>Descubre cómo podría verse tu rostro a diferentes edades gracias a la inteligencia artificial.</p>
+<p><strong>Web App:</strong> <a href="https://faceagingstudio.com/app/">https://faceagingstudio.com/app/</a><br>
+<strong>Demo gratuita:</strong> <a href="https://faceagingstudio.com/demo/">https://faceagingstudio.com/demo/</a></p>
+<p>Si necesitas ayuda, no dudes en ponerte en contacto con nosotros.</p>
+<p>Gracias por elegir <strong>Face Aging Studio</strong>.</p>
+<p>Hasta pronto,<br>
+<strong>El equipo de Face Aging Studio</strong><br>
+<a href="https://faceagingstudio.com">https://faceagingstudio.com</a></p>""",
+        },
+        "da": {
+            "subject": "Velkommen til Face Aging Studio 👋",
+            "text": """Hej,
+
+Velkommen til Face Aging Studio, og tak fordi du har oprettet en konto.
+
+Din konto er nu aktiv. Du kan bruge den både i Web App og i Windows-appen med den samme konto og den samme kreditbalance.
+
+Se, hvordan dit ansigt måske kan se ud i forskellige aldre ved hjælp af kunstig intelligens.
+
+Web App: https://faceagingstudio.com/app/
+Gratis demo: https://faceagingstudio.com/demo/
+
+Hvis du har brug for hjælp, er du altid velkommen til at kontakte os.
+
+Tak fordi du valgte Face Aging Studio.
+
+Vi ses,
+Face Aging Studio-teamet
+https://faceagingstudio.com""",
+            "html": """<p>Hej,</p>
+<p>Velkommen til <strong>Face Aging Studio</strong>, og tak fordi du har oprettet en konto.</p>
+<p>Din konto er nu aktiv. Du kan bruge den både i <strong>Web App</strong> og i <strong>Windows-appen</strong> med den samme konto og den samme kreditbalance.</p>
+<p>Se, hvordan dit ansigt måske kan se ud i forskellige aldre ved hjælp af kunstig intelligens.</p>
+<p><strong>Web App:</strong> <a href="https://faceagingstudio.com/app/">https://faceagingstudio.com/app/</a><br>
+<strong>Gratis demo:</strong> <a href="https://faceagingstudio.com/demo/">https://faceagingstudio.com/demo/</a></p>
+<p>Hvis du har brug for hjælp, er du altid velkommen til at kontakte os.</p>
+<p>Tak fordi du valgte <strong>Face Aging Studio</strong>.</p>
+<p>Vi ses,<br>
+<strong>Face Aging Studio-teamet</strong><br>
+<a href="https://faceagingstudio.com">https://faceagingstudio.com</a></p>""",
+        },
+    }
+
+    message = messages[language]
+    return send_resend_email(
+        to_email=to_email,
+        subject=message["subject"],
+        html_content=message["html"],
+        text_content=message["text"],
+        idempotency_key=f"welcome-user-{user_id}",
+    )
+
+
+def send_purchase_email(
+    to_email: str,
+    language: str,
+    credits_added: int,
+    credits_total: int,
+    session_id: str,
+) -> bool:
+    language = language if language in {"en", "fr", "es", "da"} else "en"
+
+    messages = {
+        "en": {
+            "subject": "Thank you for your purchase – Face Aging Studio",
+            "text": f"""Hello,
+
+Thank you for your purchase on Face Aging Studio.
+
+Your payment has been successfully confirmed.
+
+Credits added: {credits_added}
+New credit balance: {credits_total}
+
+Your credits are available immediately and can be used in both the Web App and the Windows application.
+
+Open the Web App: https://faceagingstudio.com/app/
+
+Thank you for your trust and enjoy Face Aging Studio!
+
+Best regards,
+The Face Aging Studio Team
+https://faceagingstudio.com""",
+            "html": f"""<p>Hello,</p>
+<p>Thank you for your purchase on <strong>Face Aging Studio</strong>.</p>
+<p>Your payment has been successfully confirmed.</p>
+<p><strong>Credits added:</strong> {credits_added}<br>
+<strong>New credit balance:</strong> {credits_total}</p>
+<p>Your credits are available immediately and can be used in both the <strong>Web App</strong> and the <strong>Windows application</strong>.</p>
+<p><strong>Open the Web App:</strong> <a href="https://faceagingstudio.com/app/">https://faceagingstudio.com/app/</a></p>
+<p>Thank you for your trust and enjoy Face Aging Studio!</p>
+<p>Best regards,<br>
+<strong>The Face Aging Studio Team</strong><br>
+<a href="https://faceagingstudio.com">https://faceagingstudio.com</a></p>""",
+        },
+        "fr": {
+            "subject": "Merci pour votre achat – Face Aging Studio",
+            "text": f"""Bonjour,
+
+Merci pour votre achat sur Face Aging Studio.
+
+Votre paiement a bien été confirmé.
+
+Crédits ajoutés : {credits_added}
+Nouveau solde de crédits : {credits_total}
+
+Vos crédits sont disponibles immédiatement et peuvent être utilisés aussi bien dans la Web App que dans l’application Windows.
+
+Ouvrir la Web App : https://faceagingstudio.com/app/
+
+Merci pour votre confiance et profitez bien de Face Aging Studio !
+
+Cordialement,
+L’équipe Face Aging Studio
+https://faceagingstudio.com""",
+            "html": f"""<p>Bonjour,</p>
+<p>Merci pour votre achat sur <strong>Face Aging Studio</strong>.</p>
+<p>Votre paiement a bien été confirmé.</p>
+<p><strong>Crédits ajoutés :</strong> {credits_added}<br>
+<strong>Nouveau solde de crédits :</strong> {credits_total}</p>
+<p>Vos crédits sont disponibles immédiatement et peuvent être utilisés aussi bien dans la <strong>Web App</strong> que dans l’<strong>application Windows</strong>.</p>
+<p><strong>Ouvrir la Web App :</strong> <a href="https://faceagingstudio.com/app/">https://faceagingstudio.com/app/</a></p>
+<p>Merci pour votre confiance et profitez bien de Face Aging Studio !</p>
+<p>Cordialement,<br>
+<strong>L’équipe Face Aging Studio</strong><br>
+<a href="https://faceagingstudio.com">https://faceagingstudio.com</a></p>""",
+        },
+        "es": {
+            "subject": "Gracias por tu compra – Face Aging Studio",
+            "text": f"""Hola,
+
+Gracias por tu compra en Face Aging Studio.
+
+Tu pago ha sido confirmado correctamente.
+
+Créditos añadidos: {credits_added}
+Nuevo saldo de créditos: {credits_total}
+
+Tus créditos están disponibles inmediatamente y pueden utilizarse tanto en la Web App como en la aplicación para Windows.
+
+Abrir la Web App: https://faceagingstudio.com/app/
+
+Gracias por tu confianza. ¡Disfruta de Face Aging Studio!
+
+Un saludo,
+El equipo de Face Aging Studio
+https://faceagingstudio.com""",
+            "html": f"""<p>Hola,</p>
+<p>Gracias por tu compra en <strong>Face Aging Studio</strong>.</p>
+<p>Tu pago ha sido confirmado correctamente.</p>
+<p><strong>Créditos añadidos:</strong> {credits_added}<br>
+<strong>Nuevo saldo de créditos:</strong> {credits_total}</p>
+<p>Tus créditos están disponibles inmediatamente y pueden utilizarse tanto en la <strong>Web App</strong> como en la <strong>aplicación para Windows</strong>.</p>
+<p><strong>Abrir la Web App:</strong> <a href="https://faceagingstudio.com/app/">https://faceagingstudio.com/app/</a></p>
+<p>Gracias por tu confianza. ¡Disfruta de Face Aging Studio!</p>
+<p>Un saludo,<br>
+<strong>El equipo de Face Aging Studio</strong><br>
+<a href="https://faceagingstudio.com">https://faceagingstudio.com</a></p>""",
+        },
+        "da": {
+            "subject": "Tak for dit køb – Face Aging Studio",
+            "text": f"""Hej,
+
+Tak for dit køb hos Face Aging Studio.
+
+Din betaling er blevet bekræftet.
+
+Tilføjede kreditter: {credits_added}
+Ny kreditbalance: {credits_total}
+
+Dine kreditter er tilgængelige med det samme og kan bruges både i Web App og i Windows-appen.
+
+Åbn Web App: https://faceagingstudio.com/app/
+
+Tak for din tillid, og god fornøjelse med Face Aging Studio!
+
+Venlig hilsen,
+Face Aging Studio-teamet
+https://faceagingstudio.com""",
+            "html": f"""<p>Hej,</p>
+<p>Tak for dit køb hos <strong>Face Aging Studio</strong>.</p>
+<p>Din betaling er blevet bekræftet.</p>
+<p><strong>Tilføjede kreditter:</strong> {credits_added}<br>
+<strong>Ny kreditbalance:</strong> {credits_total}</p>
+<p>Dine kreditter er tilgængelige med det samme og kan bruges både i <strong>Web App</strong> og i <strong>Windows-appen</strong>.</p>
+<p><strong>Åbn Web App:</strong> <a href="https://faceagingstudio.com/app/">https://faceagingstudio.com/app/</a></p>
+<p>Tak for din tillid, og god fornøjelse med Face Aging Studio!</p>
+<p>Venlig hilsen,<br>
+<strong>Face Aging Studio-teamet</strong><br>
+<a href="https://faceagingstudio.com">https://faceagingstudio.com</a></p>""",
+        },
+    }
+
+    message = messages[language]
+    return send_resend_email(
+        to_email=to_email,
+        subject=message["subject"],
+        html_content=message["html"],
+        text_content=message["text"],
+        idempotency_key=f"purchase-{session_id}",
+    )
+
+
 def credit_paid_checkout_session(session_id: str, expected_email: Optional[str] = None) -> dict:
     session_id = normalize_checkout_session_id(session_id)
 
@@ -955,6 +1317,11 @@ def credit_paid_checkout_session(session_id: str, expected_email: Optional[str] 
 
     if not email:
         raise HTTPException(status_code=400, detail="Email introuvable dans la session Stripe")
+
+    customer_details_for_language = stripe_obj_get(session, "customer_details", {}) or {}
+    customer_address_for_language = stripe_obj_get(customer_details_for_language, "address", {}) or {}
+    customer_country = str(stripe_obj_get(customer_address_for_language, "country", "")).strip().upper()
+    purchase_language = email_language_from_country(customer_country)
 
     if expected_email and email != expected_email.lower().strip():
         raise HTTPException(status_code=403, detail="Cette session Stripe n'appartient pas à cet utilisateur")
@@ -1042,6 +1409,14 @@ def credit_paid_checkout_session(session_id: str, expected_email: Optional[str] 
     finally:
         conn.close()
 
+    send_purchase_email(
+        to_email=email,
+        language=purchase_language,
+        credits_added=credits_to_add,
+        credits_total=new_credits,
+        session_id=session_id,
+    )
+
     return {
         "success": True,
         "credited_email": email,
@@ -1104,7 +1479,7 @@ def payment_cancel():
     </html>
     """)
 @app.post("/register")
-def register(email: str = Form(...), password: str = Form(...)):
+def register(request: Request, email: str = Form(...), password: str = Form(...)):
     email = email.lower().strip()
 
     if "@" not in email or len(email) < 5:
@@ -1146,6 +1521,15 @@ def register(email: str = Form(...), password: str = Form(...)):
             )
         except Exception as e:
             print("GA4 SIGN_UP ERROR:", e)
+
+    welcome_language = email_language_from_accept_language(
+        request.headers.get("accept-language", "")
+    )
+    send_welcome_email(
+        to_email=user["email"],
+        language=welcome_language,
+        user_id=int(user["id"]),
+    )
 
     return {
         "success": True,
