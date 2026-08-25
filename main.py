@@ -63,6 +63,33 @@ DEFAULT_FREE_CREDITS = int(os.getenv("DEFAULT_FREE_CREDITS", "0"))
 MAX_AGE = int(os.getenv("MAX_AGE", "100"))
 MODEL_ID = os.getenv("MODEL_ID", "fal-ai/image-apps-v2/age-modify")
 
+CREATIVE_STYLE_MODEL_ID = "fal-ai/image-apps-v2/style-transfer"
+CREATIVE_VOXEL_MODEL_ID = "fal-ai/recraft/v3/image-to-image"
+
+CREATIVE_STYLE_PRESETS = {
+    "cartoon_3d": "cartoon_3d",
+    "anime": "anime",
+    "comic_book_animation": "comic_book_animation",
+    "pixel_art": "pixel_art",
+    "cyberpunk_future": "cyberpunk_future",
+    "claymation": "claymation",
+}
+
+CREATIVE_VOXEL_PROMPT = (
+    "Transform this portrait into a premium 3D voxel-world character portrait. "
+    "Preserve the person's recognizable facial identity, age, expression, hairstyle, "
+    "skin tone, pose, and framing. Build the face, hair, clothing, and background from "
+    "clean dimensional cubic voxels and block-shaped geometry. Use refined studio lighting, "
+    "cinematic depth, crisp edges, rich natural colors, and professional high-end game-art quality. "
+    "Keep exactly one person, centered, with coherent anatomy and detailed facial features translated "
+    "into voxel geometry. No text, no logo, no watermark."
+)
+
+CREATIVE_VOXEL_NEGATIVE_PROMPT = (
+    "photorealistic skin, smooth organic surfaces, blurry, low quality, distorted face, "
+    "extra eyes, extra limbs, duplicate person, text, logo, watermark"
+)
+
 STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY", "").strip()
 STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET", "").strip()
 GA4_MEASUREMENT_ID = "G-FDGNC88XDV"
@@ -563,6 +590,63 @@ def generate_paid_web_age_from_uploaded_url(uploaded_url: str, age: int, ip: Opt
     return {
         "success": True,
         "age": age,
+        "image_url": f"{PUBLIC_BASE_URL}/outputs/{output_filename}",
+        "file_path": str(output_path),
+        "filename": output_filename,
+    }
+
+
+def generate_paid_web_creative_from_uploaded_url(uploaded_url: str, style: str) -> dict:
+    clean_style = str(style or "").strip().lower()
+
+    if clean_style == "voxel_world":
+        model_id = CREATIVE_VOXEL_MODEL_ID
+        arguments = {
+            "image_url": uploaded_url,
+            "prompt": CREATIVE_VOXEL_PROMPT,
+            "negative_prompt": CREATIVE_VOXEL_NEGATIVE_PROMPT,
+            "strength": 0.65,
+            "style": "digital_illustration/handmade_3d",
+        }
+    else:
+        target_style = CREATIVE_STYLE_PRESETS.get(clean_style)
+        if not target_style:
+            raise ValueError("Style Creative invalide")
+
+        model_id = CREATIVE_STYLE_MODEL_ID
+        arguments = {
+            "image_url": uploaded_url,
+            "target_style": target_style,
+        }
+
+    result = fal_client.subscribe(
+        model_id,
+        arguments=arguments,
+    )
+
+    images = result.get("images", [])
+    if not images or not images[0].get("url"):
+        raise RuntimeError("Réponse FAL invalide : aucune image Creative retournée")
+
+    image_url = images[0]["url"]
+    response = requests.get(image_url, timeout=120)
+    response.raise_for_status()
+
+    content_type = str(response.headers.get("content-type", "")).lower()
+    if "webp" in content_type:
+        output_ext = ".webp"
+    elif "jpeg" in content_type or "jpg" in content_type:
+        output_ext = ".jpg"
+    else:
+        output_ext = ".png"
+
+    output_filename = f"creative_{clean_style}_{uuid4().hex[:8]}{output_ext}"
+    output_path = OUTPUT_DIR / output_filename
+    output_path.write_bytes(response.content)
+
+    return {
+        "success": True,
+        "style": clean_style,
         "image_url": f"{PUBLIC_BASE_URL}/outputs/{output_filename}",
         "file_path": str(output_path),
         "filename": output_filename,
@@ -2063,6 +2147,90 @@ async def web_age_batch(
 # =========================================================
 # ROUTES - WEB DEMO / ONLINE APP
 # =========================================================
+
+@app.post("/web/creative-style")
+async def web_creative_style(
+    request: Request,
+    file: UploadFile = File(...),
+    style: str = Form(...),
+    user: sqlite3.Row = Depends(get_current_user),
+):
+    ip = client_ip(request)
+    user_id = int(user["id"])
+    clean_style = str(style or "").strip().lower()
+
+    allowed_styles = set(CREATIVE_STYLE_PRESETS.keys()) | {"voxel_world"}
+    if clean_style not in allowed_styles:
+        raise HTTPException(status_code=400, detail="Style Creative invalide")
+
+    rate_key = f"web-creative-style:{user_id}:{ip}"
+    check_rate_limit(rate_key)
+
+    input_path = None
+    credit_reserved = False
+
+    try:
+        content = await file.read()
+        validate_uploaded_image(file, content)
+
+        reserve_user_credits(
+            user_id=user_id,
+            credits_needed=1,
+            note=f"Réservation génération Creative Style : {clean_style}",
+        )
+        credit_reserved = True
+
+        os.environ["FAL_KEY"] = FAL_KEY
+
+        ext = Path(file.filename or "input.jpg").suffix.lower() or ".jpg"
+        input_path = UPLOAD_DIR / f"creative_input_{uuid4().hex[:8]}{ext}"
+        input_path.write_bytes(content)
+
+        uploaded_url = fal_client.upload_file(str(input_path))
+
+        result = await asyncio.to_thread(
+            generate_paid_web_creative_from_uploaded_url,
+            uploaded_url,
+            clean_style,
+        )
+
+        fresh_user = get_user_by_id(user_id)
+        credits_remaining = int(fresh_user["credits"]) if fresh_user else 0
+
+        return {
+            "success": True,
+            "mode": "creative_style",
+            "style": clean_style,
+            "credits_used": 1,
+            "credits_remaining": credits_remaining,
+            "image_url": result["image_url"],
+            "filename": result["filename"],
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        if credit_reserved:
+            try:
+                refund_user_credits(
+                    user_id=user_id,
+                    credits_to_refund=1,
+                    note=f"Remboursement génération Creative Style échouée : {clean_style}",
+                )
+            except Exception as refund_error:
+                print("CREATIVE STYLE REFUND ERROR:", refund_error)
+
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "error": str(e)},
+        )
+    finally:
+        try:
+            if input_path and input_path.exists():
+                input_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+
 
 @app.post("/web/demo-age")
 async def web_demo_age(
