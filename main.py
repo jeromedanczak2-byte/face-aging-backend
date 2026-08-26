@@ -2331,6 +2331,120 @@ async def web_demo_age(
         except Exception:
             pass
 
+
+@app.post("/web/demo-creative-style")
+async def web_demo_creative_style(
+    request: Request,
+    file: UploadFile = File(...),
+    style: str = Form(...),
+    demo_client: str = Form(""),
+):
+    ip = client_ip(request)
+    clean_demo_client = normalize_demo_client_token(demo_client)
+    client_token_hash = hash_demo_client_token(clean_demo_client)
+    clean_style = str(style or "").strip().lower()
+
+    rate_key = f"web-demo-creative-style:{ip}:{client_token_hash or 'no-client'}"
+    check_rate_limit(rate_key)
+
+    limit_response = check_demo_limit(ip, client_token_hash)
+    if limit_response:
+        return limit_response
+
+    if clean_style != "voxel_world" and clean_style not in CREATIVE_STYLE_PRESETS:
+        raise HTTPException(status_code=400, detail="Style Creative invalide")
+
+    input_path = None
+    output_filename = None
+
+    try:
+        os.environ["FAL_KEY"] = FAL_KEY
+
+        content = await file.read()
+        validate_uploaded_image(file, content)
+
+        ext = Path(file.filename or "input.jpg").suffix.lower() or ".jpg"
+        input_path = UPLOAD_DIR / f"demo_creative_input_{uuid4().hex[:8]}{ext}"
+        input_path.write_bytes(content)
+
+        uploaded_url = fal_client.upload_file(str(input_path))
+
+        if clean_style == "voxel_world":
+            model_id = CREATIVE_VOXEL_MODEL_ID
+            arguments = {
+                "image_url": uploaded_url,
+                "prompt": CREATIVE_VOXEL_PROMPT,
+                "guidance_scale": 5.0,
+                "num_images": 1,
+                "output_format": "jpeg",
+                "aspect_ratio": "1:1",
+            }
+        else:
+            model_id = CREATIVE_STYLE_MODEL_ID
+            arguments = {
+                "image_url": uploaded_url,
+                "target_style": CREATIVE_STYLE_PRESETS[clean_style],
+            }
+
+        result = fal_client.subscribe(
+            model_id,
+            arguments=arguments,
+        )
+
+        images = result.get("images", [])
+        if not images or not images[0].get("url"):
+            raise RuntimeError("Réponse FAL invalide : aucune image Creative retournée")
+
+        image_url = images[0]["url"]
+        response = requests.get(image_url, timeout=120)
+        response.raise_for_status()
+
+        demo_img_bytes = make_demo_watermarked_image(response.content)
+
+        output_filename = f"demo_creative_{clean_style}_{uuid4().hex[:8]}.jpg"
+        output_path = OUTPUT_DIR / output_filename
+        output_path.write_bytes(demo_img_bytes)
+
+        log_demo_generation(
+            ip_address=ip,
+            client_token_hash=client_token_hash,
+            output_filename=output_filename,
+            status="success",
+            error_message=None,
+        )
+
+        return {
+            "success": True,
+            "demo": True,
+            "watermark": True,
+            "low_resolution": True,
+            "style": clean_style,
+            "image_url": f"{PUBLIC_BASE_URL}/outputs/{output_filename}",
+            "filename": output_filename,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        log_demo_generation(
+            ip_address=ip,
+            client_token_hash=client_token_hash,
+            output_filename=output_filename,
+            status="error",
+            error_message=str(e),
+        )
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "error": str(e)},
+        )
+    finally:
+        try:
+            if input_path and input_path.exists():
+                input_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+
 # =========================================================
 # ADMIN / DEV TEMPORARY ROUTES
 # =========================================================
