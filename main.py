@@ -64,7 +64,7 @@ MAX_AGE = int(os.getenv("MAX_AGE", "100"))
 MODEL_ID = os.getenv("MODEL_ID", "fal-ai/image-apps-v2/age-modify")
 
 CREATIVE_STYLE_MODEL_ID = "fal-ai/image-apps-v2/style-transfer"
-CREATIVE_VOXEL_MODEL_ID = "fal-ai/recraft/v3/image-to-image"
+CREATIVE_VOXEL_MODEL_ID = "fal-ai/flux-pro/kontext/max"
 
 CREATIVE_STYLE_PRESETS = {
     "cartoon_3d": "cartoon_3d",
@@ -76,18 +76,18 @@ CREATIVE_STYLE_PRESETS = {
 }
 
 CREATIVE_VOXEL_PROMPT = (
-    "Transform this portrait into a premium 3D voxel-world character portrait. "
-    "Preserve the person's recognizable facial identity, age, expression, hairstyle, "
-    "skin tone, pose, and framing. Build the face, hair, clothing, and background from "
-    "clean dimensional cubic voxels and block-shaped geometry. Use refined studio lighting, "
-    "cinematic depth, crisp edges, rich natural colors, and professional high-end game-art quality. "
-    "Keep exactly one person, centered, with coherent anatomy and detailed facial features translated "
-    "into voxel geometry. No text, no logo, no watermark."
-)
-
-CREATIVE_VOXEL_NEGATIVE_PROMPT = (
-    "photorealistic skin, smooth organic surfaces, blurry, low quality, distorted face, "
-    "extra eyes, extra limbs, duplicate person, text, logo, watermark"
+    "Transform the person in this photo into a classic block-world sandbox game avatar while preserving "
+    "their recognizable identity, skin tone, hairstyle colors, clothing colors, expression, pose, and framing. "
+    "The character must look built from large cubes and rectangular prisms, not like a smooth 3D sculpture. "
+    "Use a perfectly box-shaped cuboid head with flat front, side, and top planes, sharp 90-degree corners, "
+    "a rectangular neck and torso, and block-shaped shoulders and arms. Build the hair from chunky square blocks "
+    "and stepped voxel clusters. Render the eyes, eyebrows, nose, and mouth as simple flat pixel-art markings "
+    "painted directly onto the front plane of the cuboid head, with no protruding realistic nose, no rounded cheeks, "
+    "no curved jaw, no smooth skin, no clay look, no doll-like face, and no organic sculpted anatomy. "
+    "Make the entire environment a bright colorful landscape constructed from cubic blocks: blocky ground, trees, "
+    "vegetation, sky details, and simple geometric scenery. Keep exactly one centered person and preserve enough "
+    "distinctive colors and facial cues to recognize the source person. Crisp square edges, visible voxel grid logic, "
+    "clean game lighting, high visual clarity. No text, no logo, no watermark."
 )
 
 STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY", "").strip()
@@ -604,9 +604,10 @@ def generate_paid_web_creative_from_uploaded_url(uploaded_url: str, style: str) 
         arguments = {
             "image_url": uploaded_url,
             "prompt": CREATIVE_VOXEL_PROMPT,
-            "negative_prompt": CREATIVE_VOXEL_NEGATIVE_PROMPT,
-            "strength": 0.65,
-            "style": "digital_illustration/handmade_3d",
+            "guidance_scale": 5.0,
+            "num_images": 1,
+            "output_format": "jpeg",
+            "aspect_ratio": "1:1",
         }
     else:
         target_style = CREATIVE_STYLE_PRESETS.get(clean_style)
