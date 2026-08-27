@@ -39,7 +39,7 @@ CREDIT_PACKS = {
     "300": {
         "price": 29900,
         "eur_price": 4000,
-        "stripe_price_id": "price_1U997pEEJ41rPQiDNaeEtQeya",
+        "stripe_price_id": "price_1U997pEEJ41rPQiDNaEtQeya",
         "credits": 300,
         "label": "Premium",
     },
