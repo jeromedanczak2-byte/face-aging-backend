@@ -32,7 +32,7 @@ CREDIT_PACKS = {
     "100": {
         "price": 11500,
         "eur_price": 1500,
-        "stripe_price_id": "price_1U8qBTEEJ41rPQiDeBck3Dhh",
+        "stripe_price_id": "price_1U926OEEJ41rPQiDWgmgAKl4",
         "credits": 100,
         "label": "Best Seller",
     },
@@ -1728,6 +1728,10 @@ async def create_checkout_session(
 ):
     data = await request.json()
     pack = str(data.get("pack", "")).strip()
+    currency = str(data.get("currency", "dkk")).strip().lower()
+
+    if currency not in {"dkk", "eur"}:
+        raise HTTPException(status_code=400, detail="Invalid currency")
 
     selected_pack = CREDIT_PACKS.get(pack)
     if not selected_pack:
@@ -1747,6 +1751,7 @@ async def create_checkout_session(
     session = stripe.checkout.Session.create(
         mode="payment",
         customer_email=email,
+        currency=currency,
         payment_method_types=["card", "mobilepay"],
         line_items=[
             {
