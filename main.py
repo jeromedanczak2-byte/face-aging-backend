@@ -24,16 +24,22 @@ import stripe
 CREDIT_PACKS = {
     "30": {
         "price": 3900,
+        "eur_price": 500,
+        "stripe_price_id": "price_1U8q2wEEJ41rPQiDHC3LOTYc",
         "credits": 30,
         "label": "Starter",
     },
     "100": {
         "price": 11500,
+        "eur_price": 1500,
+        "stripe_price_id": "price_1U8qBTEEJ41rPQiDeBck3Dhh",
         "credits": 100,
         "label": "Best Seller",
     },
     "300": {
         "price": 29900,
+        "eur_price": 4000,
+        "stripe_price_id": "price_1U8qCZEEJ41rPQiD5J3DSjH7",
         "credits": 300,
         "label": "Premium",
     },
@@ -1385,6 +1391,7 @@ def credit_paid_checkout_session(session_id: str, expected_email: Optional[str] 
         raise HTTPException(status_code=400, detail="Mode Stripe invalide")
 
     amount_total = int(stripe_obj_get(session, "amount_total", 0))
+    currency = str(stripe_obj_get(session, "currency", "")).strip().lower()
     payment_status = str(stripe_obj_get(session, "payment_status", "")).strip().lower()
     if payment_status != "paid":
         raise HTTPException(status_code=400, detail="Paiement non confirmé")
@@ -1416,8 +1423,12 @@ def credit_paid_checkout_session(session_id: str, expected_email: Optional[str] 
     if not selected_pack:
         raise HTTPException(status_code=400, detail="Pack Stripe invalide")
 
-    expected_amount = int(selected_pack["price"])
-    if amount_total != expected_amount:
+    expected_amounts = {
+        "dkk": int(selected_pack["price"]),
+        "eur": int(selected_pack["eur_price"]),
+    }
+    expected_amount = expected_amounts.get(currency)
+    if expected_amount is None or amount_total != expected_amount:
         raise HTTPException(status_code=400, detail="Montant Stripe invalide")
 
     credits_to_add = int(selected_pack["credits"])
@@ -1722,7 +1733,7 @@ async def create_checkout_session(
     if not selected_pack:
         raise HTTPException(status_code=400, detail="Invalid pack")
 
-    price = int(selected_pack["price"])
+    stripe_price_id = str(selected_pack["stripe_price_id"]).strip()
     credits = int(selected_pack["credits"])
     label = str(selected_pack["label"]).strip()
 
@@ -1739,13 +1750,7 @@ async def create_checkout_session(
         payment_method_types=["card", "mobilepay"],
         line_items=[
             {
-                "price_data": {
-                    "currency": "dkk",
-                    "product_data": {
-                        "name": f"{credits} credits pack",
-                    },
-                    "unit_amount": price,
-                },
+                "price": stripe_price_id,
                 "quantity": 1,
             }
         ],
