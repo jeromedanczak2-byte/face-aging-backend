@@ -1361,6 +1361,71 @@ https://faceagingstudio.com""",
     )
 
 
+def send_ga4_purchase(
+    *,
+    client_id: str,
+    ga_session_id: str,
+    user_id: int,
+    transaction_id: str,
+    amount_total: int,
+    currency: str,
+    pack_key: str,
+    pack_name: str,
+    surface: str = "web_app",
+) -> bool:
+    client_id = str(client_id or "").strip()[:128]
+    if not GA4_API_SECRET or not client_id:
+        return False
+
+    value = round(int(amount_total) / 100.0, 2)
+    event_params = {
+        "transaction_id": str(transaction_id),
+        "value": value,
+        "currency": str(currency or "").strip().upper(),
+        "engagement_time_msec": 1,
+        "surface": str(surface or "web_app").strip()[:64],
+        "items": [
+            {
+                "item_id": str(pack_key),
+                "item_name": str(pack_name),
+                "price": value,
+                "quantity": 1,
+            }
+        ],
+    }
+
+    ga_session_id = str(ga_session_id or "").strip()
+    if ga_session_id.isdigit():
+        event_params["session_id"] = int(ga_session_id)
+
+    payload = {
+        "client_id": client_id,
+        "user_id": str(user_id),
+        "events": [
+            {
+                "name": "purchase",
+                "params": event_params,
+            }
+        ],
+    }
+
+    try:
+        response = requests.post(
+            "https://www.google-analytics.com/mp/collect",
+            params={
+                "measurement_id": GA4_MEASUREMENT_ID,
+                "api_secret": GA4_API_SECRET,
+            },
+            json=payload,
+            timeout=3,
+        )
+        response.raise_for_status()
+        return True
+    except Exception as e:
+        print("GA4 PURCHASE ERROR:", e)
+        return False
+
+
 def credit_paid_checkout_session(session_id: str, expected_email: Optional[str] = None) -> dict:
     session_id = normalize_checkout_session_id(session_id)
 
@@ -1397,6 +1462,9 @@ def credit_paid_checkout_session(session_id: str, expected_email: Optional[str] 
         raise HTTPException(status_code=400, detail="Paiement non confirmé")
 
     metadata = stripe_obj_get(session, "metadata", {}) or {}
+    ga_client_id = str(stripe_obj_get(metadata, "ga_client_id", "")).strip()
+    ga_session_id = str(stripe_obj_get(metadata, "ga_session_id", "")).strip()
+    analytics_surface = str(stripe_obj_get(metadata, "analytics_surface", "")).strip() or "web_app"
     email = str(stripe_obj_get(metadata, "user_email", "")).strip().lower()
 
     if not email:
@@ -1513,6 +1581,18 @@ def credit_paid_checkout_session(session_id: str, expected_email: Optional[str] 
         session_id=session_id,
     )
 
+    send_ga4_purchase(
+        client_id=ga_client_id,
+        ga_session_id=ga_session_id,
+        user_id=int(user["id"]),
+        transaction_id=session_id,
+        amount_total=amount_total,
+        currency=currency,
+        pack_key=pack_key,
+        pack_name=pack_name,
+        surface=analytics_surface,
+    )
+
     return {
         "success": True,
         "credited_email": email,
@@ -1575,7 +1655,7 @@ def payment_cancel():
     </html>
     """)
 @app.post("/register")
-def register(request: Request, email: str = Form(...), password: str = Form(...)):
+def register(request: Request, email: str = Form(...), password: str = Form(...), analytics_source: str = Form("")):
     email = email.lower().strip()
 
     if "@" not in email or len(email) < 5:
@@ -1591,7 +1671,7 @@ def register(request: Request, email: str = Form(...), password: str = Form(...)
     user = create_user(email, password)
     token = create_access_token(user["id"], user["email"])
 
-    if GA4_API_SECRET:
+    if GA4_API_SECRET and str(analytics_source).strip().lower() != "web_app":
         try:
             requests.post(
                 "https://www.google-analytics.com/mp/collect",
@@ -1609,6 +1689,7 @@ def register(request: Request, email: str = Form(...), password: str = Form(...)
                                 "method": "email",
                                 "session_id": int(time.time()),
                                 "engagement_time_msec": 1,
+                                "surface": "windows_app",
                             },
                         }
                     ],
@@ -1728,6 +1809,9 @@ async def create_checkout_session(
 ):
     data = await request.json()
     pack = str(data.get("pack", "")).strip()
+    ga_client_id = str(data.get("ga_client_id", "")).strip()[:128]
+    ga_session_id = str(data.get("ga_session_id", "")).strip()[:64]
+    analytics_surface = str(data.get("analytics_surface", "")).strip()[:64]
 
     selected_pack = CREDIT_PACKS.get(pack)
     if not selected_pack:
@@ -1744,6 +1828,19 @@ async def create_checkout_session(
         separator = "&" if "?" in success_url else "?"
         success_url = f"{success_url}{separator}session_id={{CHECKOUT_SESSION_ID}}"
 
+    checkout_metadata = {
+        "user_email": email,
+        "pack_key": pack,
+        "credits_to_add": str(credits),
+        "pack_name": label,
+    }
+    if ga_client_id:
+        checkout_metadata["ga_client_id"] = ga_client_id
+    if ga_session_id:
+        checkout_metadata["ga_session_id"] = ga_session_id
+    if analytics_surface:
+        checkout_metadata["analytics_surface"] = analytics_surface
+
     session = stripe.checkout.Session.create(
         mode="payment",
         customer_email=email,
@@ -1756,12 +1853,7 @@ async def create_checkout_session(
         ],
         success_url=success_url,
         cancel_url=STRIPE_CANCEL_URL,
-        metadata={
-            "user_email": email,
-            "pack_key": pack,
-            "credits_to_add": str(credits),
-            "pack_name": label,
-        },
+        metadata=checkout_metadata,
     )
 
     return {
